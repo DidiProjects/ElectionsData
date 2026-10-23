@@ -1,0 +1,15 @@
+services:
+  worker:
+    build: .
+    container_name: elections-data-worker
+    env_file: .env
+    environment:
+      - OUTPUT_DIR=/data/output
+    volumes:
+      - ${OUTPUT_HOST_DIR:-./output}:/data/output
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
