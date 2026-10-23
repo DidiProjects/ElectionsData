@@ -13,12 +13,10 @@ describe('createResultStore', () => {
     expect(targetKey(target('01007', 3))).toBe('ac01007-c3');
   });
 
-  it('stores the first result and bumps the office revision', () => {
+  it('stores the first result', () => {
     const store = createResultStore();
-    expect(store.revision(1)).toBe(0);
     expect(store.update(target(), result('5'), '"e"')).toBe('stored');
     expect(store.get(target())).toEqual({ result: result('5'), etag: '"e"' });
-    expect(store.revision(1)).toBe(1);
   });
 
   it('accepts newer or equal generations', () => {
@@ -34,7 +32,6 @@ describe('createResultStore', () => {
     store.update(target(), result('6'), '"new"');
     expect(store.update(target(), result('5'), '"old"')).toBe('stale');
     expect(store.get(target())).toMatchObject({ etag: '"new"', result: { generationId: 6 } });
-    expect(store.revision(1)).toBe(1);
   });
 
   it('lists results of one office sorted by state and municipality', () => {

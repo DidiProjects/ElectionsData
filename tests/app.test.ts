@@ -19,7 +19,7 @@ describe('createApp', () => {
   });
   afterEach(() => fs.rm(dir, { recursive: true, force: true }));
 
-  it('exports only complete cycles, versioning in a folder with a fixed-name latest file', async () => {
+  it('publishes a snapshot folder per complete job and keeps the root file on the newest one', async () => {
     const clock = new FakeClock('2026-10-25T20:00:00Z');
     const logger: Logger = { ...silentLogger, warn: vi.fn() };
     let cycle = 0;
@@ -78,13 +78,12 @@ describe('createApp', () => {
     ]);
     expect((fetch.mock.calls[0]?.[1].headers as Record<string, string>)['User-Agent']).toBe(USER_AGENT);
 
-    expect((await fs.readdir(dir)).sort()).toEqual([PREFIX, `${PREFIX}.csv`]);
-    const versions = (await fs.readdir(path.join(dir, PREFIX))).sort();
-    expect(versions).toEqual(['20261025T200030000Z.csv', '20261025T200100000Z.csv']);
-
-    const first = await fs.readFile(path.join(dir, PREFIX, versions[0] as string), 'utf8');
-    const newest = await fs.readFile(path.join(dir, PREFIX, versions[1] as string), 'utf8');
-    const latest = await fs.readFile(path.join(dir, `${PREFIX}.csv`), 'utf8');
+    // Cycle 1 had a gap, so only jobs 2 and 3 published a snapshot folder.
+    const CSV = `${PREFIX}.csv`;
+    expect((await fs.readdir(dir)).sort()).toEqual(['20261025T200030000Z', '20261025T200100000Z', CSV]);
+    const first = await fs.readFile(path.join(dir, '20261025T200030000Z', CSV), 'utf8');
+    const newest = await fs.readFile(path.join(dir, '20261025T200100000Z', CSV), 'utf8');
+    const latest = await fs.readFile(path.join(dir, CSV), 'utf8');
     for (const csv of [first, newest]) {
       expect(new Set(csv.trimEnd().split('\n').slice(1).map((l) => l.split(',')[5]))).toEqual(new Set(['01007', '01008']));
     }

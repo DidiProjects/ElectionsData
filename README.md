@@ -52,23 +52,24 @@ O primeiro job baixa todos os municípios, uma vez por cargo, o que leva cerca d
 
 ## CSV
 
-Para cada eleição e cargo, a pasta de saída fica assim:
+A cada job completo, a pasta de saída recebe uma pasta nova com o timestamp do job, e os arquivos da raiz são substituídos:
 
 ```
 OUTPUT_DIR/
-├── ele2026_e006258_c0001.csv          ← resultado mais recente, nome fixo
-└── ele2026_e006258_c0001/
-    ├── 20261025T200030000Z.csv        ← versões, horário em UTC
-    ├── 20261025T200130000Z.csv
-    └── ...                            (últimas MAX_CSV_VERSIONS)
+├── ele2026_e006258_c0001.csv          ← resultado do job completo mais recente (substituído a cada job)
+├── 20261025T200030000Z/               ← uma pasta por job, horário em UTC
+│   └── ele2026_e006258_c0001.csv      (um CSV por cargo configurado)
+├── 20261025T200130000Z/
+│   └── ele2026_e006258_c0001.csv
+└── ...
 ```
 
-- **Quem consome o dado lê o arquivo de nome fixo.** Ele é sempre um resultado completo: tem todos os municípios, cada um com a contagem mais recente já totalizada pelo TSE.
-- O CSV só é gravado ao fim de um job em que **todo** município × cargo tem um valor válido ou um 404 confirmado. Enquanto faltar algum (por exemplo, durante a carga inicial ou depois de falhas), nada é publicado. O job seguinte busca de novo só o que falta.
-- Uma versão nova, junto com a atualização do arquivo fixo, só é gravada quando o conteúdo muda. As `MAX_CSV_VERSIONS` versões mais recentes (padrão 20) são mantidas e as antigas, apagadas.
+- **Quem consome o dado lê o arquivo da raiz.** Ele é sempre um resultado completo: tem todos os municípios, cada um com a contagem mais recente já totalizada pelo TSE.
+- Um job só publica quando **todo** município × cargo tem um valor válido ou um 404 confirmado. Enquanto faltar algum (por exemplo, durante a carga inicial ou depois de falhas), não sai pasta e a raiz não muda. O job seguinte busca de novo só o que falta.
+- Todo job completo gera a sua pasta, mesmo que o conteúdo seja igual ao do anterior. As pastas se acumulam e nada é apagado: cada pasta de presidente para o Brasil inteiro tem cerca de 6,3 MB. Uma noite de apuração com jobs a cada 60 s soma alguns GB.
 - Uma linha por município × candidato, com os totais do município repetidos em cada linha.
 - Codificação UTF-8, separador vírgula, decimal com ponto.
-- A gravação é atômica (arquivo `.tmp` e depois `rename`): quem lê a pasta nunca encontra um arquivo pela metade.
+- A gravação é atômica: a pasta do job é montada com nome oculto e renomeada só no fim, e os arquivos da raiz são gravados num `.tmp` e depois renomeados. Quem lê nunca encontra um arquivo ou uma pasta pela metade.
 
 Colunas: `election_code, round, office_code, office_name, state, municipality_code, ibge_code, municipality_name, totalization_status, totalization_date, totalization_time, tse_generated_at, sections_total, sections_counted, sections_counted_pct, electorate, turnout, abstention, valid_votes, blank_votes, null_votes, candidate_number, candidate_name, candidate_ballot_name, party, coalition, votes, votes_pct, candidate_status, elected`.
 
@@ -97,7 +98,6 @@ Durante a janela, um job roda a cada `POLL_INTERVAL_SECONDS`: ele coleta o que m
 | `POLL_INTERVAL_SECONDS` | sim | — | Período do job, coleta + export (≥ 30) |
 | `SCHEDULE_START` | não | agora | Início da janela |
 | `SCHEDULE_END` | não | nunca | Fim da janela |
-| `MAX_CSV_VERSIONS` | não | `20` | Versões mantidas por arquivo |
 | `MAX_RETRIES` | não | `3` | Retentativas por request |
 | `RETRY_BASE_DELAY_MS` | não | `1000` | Base do backoff exponencial |
 | `REQUEST_TIMEOUT_MS` | não | `15000` | Timeout por tentativa |
@@ -139,7 +139,7 @@ Configuração no GitHub:
 
 - **Secrets:** `TAILSCALE_CLIENT_SECRET` e `SSH_PRIVATE_KEY`.
 - **Variables:** `TAILSCALE_IP`, `ELECTION_CYCLE`, `ELECTION_CODE` e `OFFICE_CODES`.
-- **Variables opcionais:** `STATES`, `SCHEDULE_START`, `SCHEDULE_END`, `OUTPUT_HOST_DIR` (padrão `/srv/elections-data/output`), `POLL_INTERVAL_SECONDS`, `MAX_CSV_VERSIONS`, `MAX_RETRIES`, `CONCURRENCY` e `LOG_LEVEL`.
+- **Variables opcionais:** `STATES`, `SCHEDULE_START`, `SCHEDULE_END`, `OUTPUT_HOST_DIR` (padrão `/srv/elections-data/output`), `POLL_INTERVAL_SECONDS`, `MAX_RETRIES`, `CONCURRENCY` e `LOG_LEVEL`.
 
 ## Estrutura
 
@@ -154,7 +154,7 @@ src/
   tse/                   URLs, tipos brutos, validação e mapeamento do TSE
   polling/               ciclo de coleta guiado pelo acompanhamento
   results/               último valor válido por município × cargo
-  export/                CSV, versionamento e retenção
+  export/                CSV e snapshot por job
   scheduler/             janela de execução e rotinas periódicas
 tests/                   testes unitários (Vitest), espelhando src/
 ```

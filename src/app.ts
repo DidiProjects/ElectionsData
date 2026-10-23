@@ -1,7 +1,7 @@
 import type { Clock } from './clock.js';
 import type { AppConfig } from './config.js';
 import { createExporter } from './export/exporter.js';
-import { createVersionedCsvWriter } from './export/versionedCsvWriter.js';
+import { createSnapshotWriter } from './export/snapshotWriter.js';
 import { createCooldownGate } from './http/cooldownGate.js';
 import { createHttpClient, type FetchFn } from './http/httpClient.js';
 import type { Logger } from './logger.js';
@@ -50,7 +50,7 @@ export function createApp(config: AppConfig, deps: AppDependencies): App {
   const exporter = createExporter({
     store,
     logger,
-    writer: createVersionedCsvWriter({ outputDir: config.outputDir, maxVersions: config.maxVersions, clock }),
+    writer: createSnapshotWriter({ outputDir: config.outputDir, clock }),
     cycle: config.cycle,
     electionCode: config.electionCode,
     officeCodes: config.officeCodes,

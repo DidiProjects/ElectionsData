@@ -12,8 +12,6 @@ export interface ResultStore {
   /** Keeps the previous value when the incoming one is older (lower generation id). */
   update(target: PollTarget, result: MunicipalityResult, etag: string | null): UpdateOutcome;
   byOffice(officeCode: number): MunicipalityResult[];
-  /** Bumped on every accepted update; lets the exporter skip unchanged snapshots cheaply. */
-  revision(officeCode: number): number;
 }
 
 export const targetKey = (target: PollTarget): string =>
@@ -21,7 +19,6 @@ export const targetKey = (target: PollTarget): string =>
 
 export function createResultStore(): ResultStore {
   const entries = new Map<string, StoredResult>();
-  const revisions = new Map<number, number>();
 
   return {
     get: (target) => entries.get(targetKey(target)),
@@ -31,7 +28,6 @@ export function createResultStore(): ResultStore {
       const previous = entries.get(key);
       if (previous && result.generationId < previous.result.generationId) return 'stale';
       entries.set(key, { result, etag });
-      revisions.set(target.officeCode, (revisions.get(target.officeCode) ?? 0) + 1);
       return 'stored';
     },
 
@@ -46,7 +42,5 @@ export function createResultStore(): ResultStore {
           a.municipality.code.localeCompare(b.municipality.code),
       );
     },
-
-    revision: (officeCode) => revisions.get(officeCode) ?? 0,
   };
 }

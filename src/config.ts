@@ -9,7 +9,6 @@ export interface AppConfig {
   pollIntervalMs: number;
   scheduleStart: Date | null;
   scheduleEnd: Date | null;
-  maxVersions: number;
   maxRetries: number;
   retryBaseDelayMs: number;
   requestTimeoutMs: number;
@@ -112,7 +111,6 @@ export function loadConfig(env: Env): AppConfig {
     pollIntervalMs: positiveInt('POLL_INTERVAL_SECONDS') * 1000,
     scheduleStart: optionalDate('SCHEDULE_START'),
     scheduleEnd: optionalDate('SCHEDULE_END'),
-    maxVersions: positiveInt('MAX_CSV_VERSIONS', 20),
     maxRetries: nonNegativeInt('MAX_RETRIES', 3),
     retryBaseDelayMs: nonNegativeInt('RETRY_BASE_DELAY_MS', 1000),
     requestTimeoutMs: positiveInt('REQUEST_TIMEOUT_MS', 15000),

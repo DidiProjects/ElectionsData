@@ -32,7 +32,6 @@ describe('loadConfig', () => {
       pollIntervalMs: 60_000,
       scheduleStart: null,
       scheduleEnd: null,
-      maxVersions: 20,
       maxRetries: 3,
       retryBaseDelayMs: 1000,
       requestTimeoutMs: 15000,
@@ -47,7 +46,6 @@ describe('loadConfig', () => {
       STATES: 'SP, rj',
       SCHEDULE_START: '2026-10-25T17:00:00-03:00',
       SCHEDULE_END: '2026-10-26T06:00:00Z',
-      MAX_CSV_VERSIONS: '5',
       MAX_RETRIES: '0',
       RETRY_BASE_DELAY_MS: '250',
       REQUEST_TIMEOUT_MS: '5000',
@@ -57,7 +55,6 @@ describe('loadConfig', () => {
     expect(config.states).toEqual(['sp', 'rj']);
     expect(config.scheduleStart?.toISOString()).toBe('2026-10-25T20:00:00.000Z');
     expect(config.scheduleEnd?.toISOString()).toBe('2026-10-26T06:00:00.000Z');
-    expect(config.maxVersions).toBe(5);
     expect(config.maxRetries).toBe(0);
     expect(config.retryBaseDelayMs).toBe(250);
     expect(config.requestTimeoutMs).toBe(5000);
