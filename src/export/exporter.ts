@@ -36,7 +36,8 @@ export function createExporter(options: ExporterOptions): Exporter {
           exportedRevision.set(officeCode, revision);
           if (outcome.written) {
             options.logger.info('csv version written', {
-              file: outcome.filePath,
+              version: outcome.versionPath,
+              latest: outcome.latestPath,
               municipalities: results.length,
               pruned: outcome.pruned.length,
             });

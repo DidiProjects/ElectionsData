@@ -22,34 +22,28 @@ describe('runWindow', () => {
   it('does nothing when the window already closed', async () => {
     const clock = new FakeClock('2026-10-25T23:00:00Z');
     const { task, runs } = recordingTask(clock, 't', 1000);
-    const onClose = vi.fn(async () => undefined);
     const outcome = await runWindow({
       clock,
       logger: silentLogger,
       window: { start: null, end: at('2026-10-25T22:00:00Z') },
       tasks: [task],
-      onClose,
     });
     expect(outcome).toBe('already_closed');
     expect(runs).toEqual([]);
-    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('waits for the start, runs at a fixed rate and stops at the end', async () => {
     const clock = new FakeClock('2026-10-25T19:59:00Z');
     const { task, runs } = recordingTask(clock, 'poll', 30_000, 10_000);
-    const onClose = vi.fn(async () => undefined);
     const outcome = await runWindow({
       clock,
       logger: silentLogger,
       window: { start: at('2026-10-25T20:00:00Z'), end: at('2026-10-25T20:01:30Z') },
       tasks: [task],
-      onClose,
     });
     expect(outcome).toBe('completed');
     // A 10s run followed by a 20s pause keeps the 30s cadence.
     expect(runs).toEqual(['20:00:00', '20:00:30', '20:01:00']);
-    expect(onClose).toHaveBeenCalledTimes(1);
     expect(clock.now().toISOString()).toBe('2026-10-25T20:01:30.000Z');
   });
 
@@ -116,7 +110,7 @@ describe('runWindow', () => {
     expect(slow.runs.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('stops when aborted and still runs onClose', async () => {
+  it('stops when aborted', async () => {
     const clock = new FakeClock('2026-10-25T20:00:00Z');
     const controller = new AbortController();
     let calls = 0;
@@ -127,18 +121,15 @@ describe('runWindow', () => {
         if (++calls === 2) controller.abort();
       },
     };
-    const onClose = vi.fn(async () => undefined);
     const outcome = await runWindow({
       clock,
       logger: silentLogger,
       window: { start: null, end: null },
       tasks: [task],
-      onClose,
       signal: controller.signal,
     });
     expect(outcome).toBe('aborted');
     expect(calls).toBe(2);
-    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('returns aborted when stopped while waiting for the start', async () => {

@@ -70,11 +70,17 @@ export function createApp(config: AppConfig, deps: AppDependencies): App {
             run: async (taskSignal) => {
               const stats = await poller.pollOnce(taskSignal);
               logger.info('poll cycle finished', { ...stats });
+              // Exporting mid-sweep would publish a CSV that silently lacks municipalities.
+              if (stats.complete) {
+                await exporter.exportAll();
+              } else {
+                logger.warn('cycle left gaps, export skipped until every municipality has a value', {
+                  missing: stats.missing,
+                });
+              }
             },
           },
-          { name: 'export', intervalMs: config.exportIntervalMs, run: () => exporter.exportAll() },
         ],
-        onClose: () => exporter.exportAll(),
       }),
   };
 }

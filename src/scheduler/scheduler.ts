@@ -17,8 +17,6 @@ export interface RunWindowOptions {
   logger: Logger;
   window: ScheduleWindow;
   tasks: ScheduledTask[];
-  /** Runs once after the window closes (or the process is stopped), e.g. a final export. */
-  onClose?: () => Promise<void>;
   signal?: AbortSignal;
 }
 
@@ -75,7 +73,6 @@ export async function runWindow(options: RunWindowOptions): Promise<WindowOutcom
     logger.info('schedule window open', { end: window.end?.toISOString() ?? null });
     await Promise.all(options.tasks.map((task) => runTask(task, options, controller.signal)));
 
-    if (options.onClose) await options.onClose();
     const outcome = controller.signal.aborted ? 'aborted' : 'completed';
     logger.info('schedule window closed', { outcome });
     return outcome;

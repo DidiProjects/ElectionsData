@@ -152,6 +152,51 @@ describe('createPoller', () => {
     expect((await build().pollOnce(controller.signal)).failed).toBe(0);
   });
 
+  it('reports a complete cycle when every target has a value', async () => {
+    expect(await build([1, 3]).pollOnce()).toMatchObject({ missing: 0, complete: true });
+  });
+
+  it('reports gaps while some targets still lack a valid value', async () => {
+    client.getMunicipalityResult.mockResolvedValueOnce({ kind: 'invalid' });
+    client.getMunicipalityResult.mockRejectedValueOnce(new Error('timeout'));
+    const poller = build([1, 3]);
+    expect(await poller.pollOnce()).toMatchObject({ missing: 2, complete: false });
+    expect(await poller.pollOnce()).toMatchObject({ targetsDue: 2, missing: 0, complete: true });
+  });
+
+  it('counts a confirmed 404 as accounted for', async () => {
+    client.getMunicipalityResult.mockResolvedValue({ kind: 'not_found' });
+    expect(await build().pollOnce()).toMatchObject({ missing: 0, complete: true });
+  });
+
+  it('stays complete when a later cycle fails, since previous values are kept', async () => {
+    const poller = build();
+    await poller.pollOnce();
+    client.getTracking.mockResolvedValue(snapshot({ '00001': 'f2', '00002': 'f2' }));
+    client.getMunicipalityResult.mockRejectedValue(new Error('down'));
+    expect(await poller.pollOnce()).toMatchObject({ failed: 2, missing: 0, complete: true });
+  });
+
+  it('keeps a stored value when the file later returns 404', async () => {
+    const poller = build();
+    await poller.pollOnce();
+    client.getTracking.mockResolvedValue(snapshot({ '00001': 'f2', '00002': 'f1' }));
+    client.getMunicipalityResult.mockResolvedValueOnce({ kind: 'not_found' });
+    expect(await poller.pollOnce()).toMatchObject({ notFound: 1, complete: true });
+    expect(store.get({ municipality: A, officeCode: 1 })).toBeDefined();
+  });
+
+  it('never reports an aborted cycle as complete', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    expect((await build().pollOnce(controller.signal)).complete).toBe(false);
+  });
+
+  it('is incomplete while the municipality list is unavailable', async () => {
+    client.getMunicipalities.mockRejectedValueOnce(new Error('down'));
+    expect((await build().pollOnce()).complete).toBe(false);
+  });
+
   it('retries loading the municipality list on the next cycle', async () => {
     client.getMunicipalities.mockRejectedValueOnce(new Error('down'));
     const poller = build();

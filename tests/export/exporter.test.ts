@@ -30,7 +30,7 @@ describe('createExporter', () => {
 
   beforeEach(() => {
     store = createResultStore();
-    write = vi.fn<VersionedCsvWriter['write']>(async () => ({ written: true, filePath: '/out/x.csv', pruned: [] }));
+    write = vi.fn<VersionedCsvWriter['write']>(async () => ({ written: true, versionPath: '/out/p/v.csv', latestPath: '/out/p.csv', pruned: [] }));
     logger = { ...silentLogger, info: vi.fn(), error: vi.fn() };
   });
 
@@ -47,7 +47,7 @@ describe('createExporter', () => {
     expect(prefix).toBe('ele2026_e006258_c0001');
     expect(content?.split('\n')[0]).toBe(CSV_COLUMNS.join(','));
     expect(content?.trimEnd().split('\n')).toHaveLength(3);
-    expect(logger.info).toHaveBeenCalledWith('csv version written', { file: '/out/x.csv', municipalities: 1, pruned: 0 });
+    expect(logger.info).toHaveBeenCalledWith('csv version written', { version: '/out/p/v.csv', latest: '/out/p.csv', municipalities: 1, pruned: 0 });
   });
 
   it('skips serialization when the store has not changed since the last export', async () => {
@@ -62,7 +62,7 @@ describe('createExporter', () => {
   });
 
   it('does not log when the writer skipped identical content', async () => {
-    write.mockResolvedValueOnce({ written: false, filePath: null, pruned: [] });
+    write.mockResolvedValueOnce({ written: false, versionPath: null, latestPath: '/out/p.csv', pruned: [] });
     addResult();
     await exporter().exportAll();
     expect(logger.info).not.toHaveBeenCalled();

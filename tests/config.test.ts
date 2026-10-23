@@ -7,7 +7,6 @@ const base: Env = {
   OFFICE_CODES: '1, 3',
   OUTPUT_DIR: '/data/output',
   POLL_INTERVAL_SECONDS: '60',
-  EXPORT_INTERVAL_SECONDS: '120',
 };
 
 const problemsOf = (env: Env): string[] => {
@@ -30,7 +29,6 @@ describe('loadConfig', () => {
       officeCodes: [1, 3],
       states: [],
       outputDir: '/data/output',
-      exportIntervalMs: 120_000,
       pollIntervalMs: 60_000,
       scheduleStart: null,
       scheduleEnd: null,
@@ -73,7 +71,6 @@ describe('loadConfig', () => {
         'ELECTION_CYCLE is required',
         'ELECTION_CODE is required',
         'OUTPUT_DIR is required',
-        'EXPORT_INTERVAL_SECONDS is required',
         'POLL_INTERVAL_SECONDS is required',
       ]),
     );
@@ -86,7 +83,7 @@ describe('loadConfig', () => {
     [{ ELECTION_CYCLE: '2026' }, 'ELECTION_CYCLE must look like "ele2026", got "2026"'],
     [{ MAX_RETRIES: '-1' }, 'MAX_RETRIES must be a non-negative integer, got "-1"'],
     [{ POLL_INTERVAL_SECONDS: '10' }, 'POLL_INTERVAL_SECONDS must be at least 30'],
-    [{ EXPORT_INTERVAL_SECONDS: '0' }, 'EXPORT_INTERVAL_SECONDS must be a positive integer, got "0"'],
+    [{ POLL_INTERVAL_SECONDS: '0' }, 'POLL_INTERVAL_SECONDS must be a positive integer, got "0"'],
   ])('rejects %o', (override, problem) => {
     expect(problemsOf({ ...base, ...override })).toContain(problem);
   });

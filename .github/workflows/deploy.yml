@@ -109,7 +109,6 @@ jobs:
             -e SCHEDULE_START="${{ vars.SCHEDULE_START }}" \
             -e SCHEDULE_END="${{ vars.SCHEDULE_END }}" \
             -e POLL_INTERVAL_SECONDS="${{ vars.POLL_INTERVAL_SECONDS || '60' }}" \
-            -e EXPORT_INTERVAL_SECONDS="${{ vars.EXPORT_INTERVAL_SECONDS || '120' }}" \
             -e MAX_CSV_VERSIONS="${{ vars.MAX_CSV_VERSIONS || '20' }}" \
             -e MAX_RETRIES="${{ vars.MAX_RETRIES || '3' }}" \
             -e CONCURRENCY="${{ vars.CONCURRENCY || '8' }}" \

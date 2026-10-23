@@ -42,7 +42,7 @@ São 5,7 mil municípios por cargo. Consultar todos a cada minuto seria desneces
 7. **Intervalo mínimo de 30 s.** O CDN guarda os arquivos em cache por cerca de 52 s (`Cache-Control: max-age=52`), então consultar com mais frequência só aumenta a carga.
 8. **User-Agent identificado.** As requisições se identificam com o nome do worker e o link do repositório.
 
-O primeiro ciclo baixa todos os municípios, uma vez por cargo. Depois disso, só o que mudou.
+O primeiro job baixa todos os municípios, uma vez por cargo, o que leva cerca de 5 minutos para o Brasil inteiro. Depois disso, só o que mudou.
 
 ## Regras de atualização
 
@@ -52,10 +52,22 @@ O primeiro ciclo baixa todos os municípios, uma vez por cargo. Depois disso, s�
 
 ## CSV
 
-- Um arquivo por eleição e cargo: `{ciclo}_e{eleição:6}_c{cargo:4}_{AAAAMMDDTHHMMSSmmmZ}.csv`, com horário em UTC.
+Para cada eleição e cargo, a pasta de saída fica assim:
+
+```
+OUTPUT_DIR/
+├── ele2026_e006258_c0001.csv          ← resultado mais recente, nome fixo
+└── ele2026_e006258_c0001/
+    ├── 20261025T200030000Z.csv        ← versões, horário em UTC
+    ├── 20261025T200130000Z.csv
+    └── ...                            (últimas MAX_CSV_VERSIONS)
+```
+
+- **Quem consome o dado lê o arquivo de nome fixo.** Ele é sempre um resultado completo: tem todos os municípios, cada um com a contagem mais recente já totalizada pelo TSE.
+- O CSV só é gravado ao fim de um job em que **todo** município × cargo tem um valor válido ou um 404 confirmado. Enquanto faltar algum (por exemplo, durante a carga inicial ou depois de falhas), nada é publicado. O job seguinte busca de novo só o que falta.
+- Uma versão nova, junto com a atualização do arquivo fixo, só é gravada quando o conteúdo muda. As `MAX_CSV_VERSIONS` versões mais recentes (padrão 20) são mantidas e as antigas, apagadas.
 - Uma linha por município × candidato, com os totais do município repetidos em cada linha.
 - Codificação UTF-8, separador vírgula, decimal com ponto.
-- Uma versão nova só é gravada quando o conteúdo muda. As `MAX_CSV_VERSIONS` mais recentes (padrão 20) são mantidas e as antigas, apagadas.
 - A gravação é atômica (arquivo `.tmp` e depois `rename`): quem lê a pasta nunca encontra um arquivo pela metade.
 
 Colunas: `election_code, round, office_code, office_name, state, municipality_code, ibge_code, municipality_name, totalization_status, totalization_date, totalization_time, tse_generated_at, sections_total, sections_counted, sections_counted_pct, electorate, turnout, abstention, valid_votes, blank_votes, null_votes, candidate_number, candidate_name, candidate_ballot_name, party, coalition, votes, votes_pct, candidate_status, elected`.
@@ -66,15 +78,12 @@ Colunas: `election_code, round, office_code, office_name, state, municipality_co
 ## Agenda
 
 - `SCHEDULE_START`: antes desse horário, o worker só espera.
-- `SCHEDULE_END`: nesse horário, o worker faz um último export e para de consultar o TSE.
+- `SCHEDULE_END`: o job em andamento termina, e depois disso o worker para de consultar o TSE.
 - Os dois são opcionais e precisam estar em ISO 8601 **com fuso horário**, por exemplo `2026-10-25T17:00:00-03:00`.
 
 Depois que a janela fecha, o processo continua de pé, sem fazer nada. Se ele saísse, o `restart: unless-stopped` o reiniciaria numa janela já fechada, indefinidamente.
 
-Durante a janela rodam duas rotinas:
-
-- **Coleta**, a cada `POLL_INTERVAL_SECONDS`. Se um ciclo atrasa, o seguinte é adiantado, sem acumular ciclos.
-- **Export**, a cada `EXPORT_INTERVAL_SECONDS`.
+Durante a janela, um job roda a cada `POLL_INTERVAL_SECONDS`: ele coleta o que mudou e, se a cobertura estiver completa, exporta. Se um job demora mais que o intervalo, o seguinte começa logo depois, sem acumular jobs.
 
 ## Variáveis de ambiente
 
@@ -85,8 +94,7 @@ Durante a janela rodam duas rotinas:
 | `OFFICE_CODES` | sim | — | Cargos separados por vírgula, ex. `1` ou `3,5` |
 | `STATES` | não | todas | UFs separadas por vírgula; `zz` é o exterior |
 | `OUTPUT_DIR` | sim | `/data/output` na imagem | Pasta dos CSVs |
-| `POLL_INTERVAL_SECONDS` | sim | — | Período da coleta (≥ 30) |
-| `EXPORT_INTERVAL_SECONDS` | sim | — | Período do export |
+| `POLL_INTERVAL_SECONDS` | sim | — | Período do job, coleta + export (≥ 30) |
 | `SCHEDULE_START` | não | agora | Início da janela |
 | `SCHEDULE_END` | não | nunca | Fim da janela |
 | `MAX_CSV_VERSIONS` | não | `20` | Versões mantidas por arquivo |
@@ -131,7 +139,7 @@ Configuração no GitHub:
 
 - **Secrets:** `TAILSCALE_CLIENT_SECRET` e `SSH_PRIVATE_KEY`.
 - **Variables:** `TAILSCALE_IP`, `ELECTION_CYCLE`, `ELECTION_CODE` e `OFFICE_CODES`.
-- **Variables opcionais:** `STATES`, `SCHEDULE_START`, `SCHEDULE_END`, `OUTPUT_HOST_DIR` (padrão `/srv/elections-data/output`), `POLL_INTERVAL_SECONDS`, `EXPORT_INTERVAL_SECONDS`, `MAX_CSV_VERSIONS`, `MAX_RETRIES`, `CONCURRENCY` e `LOG_LEVEL`.
+- **Variables opcionais:** `STATES`, `SCHEDULE_START`, `SCHEDULE_END`, `OUTPUT_HOST_DIR` (padrão `/srv/elections-data/output`), `POLL_INTERVAL_SECONDS`, `MAX_CSV_VERSIONS`, `MAX_RETRIES`, `CONCURRENCY` e `LOG_LEVEL`.
 
 ## Estrutura
 

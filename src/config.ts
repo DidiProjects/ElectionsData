@@ -6,7 +6,6 @@ export interface AppConfig {
   /** Lowercase UF codes; empty means every state published for the election. */
   states: string[];
   outputDir: string;
-  exportIntervalMs: number;
   pollIntervalMs: number;
   scheduleStart: Date | null;
   scheduleEnd: Date | null;
@@ -110,7 +109,6 @@ export function loadConfig(env: Env): AppConfig {
     officeCodes,
     states,
     outputDir: required('OUTPUT_DIR'),
-    exportIntervalMs: positiveInt('EXPORT_INTERVAL_SECONDS') * 1000,
     pollIntervalMs: positiveInt('POLL_INTERVAL_SECONDS') * 1000,
     scheduleStart: optionalDate('SCHEDULE_START'),
     scheduleEnd: optionalDate('SCHEDULE_END'),

@@ -5,10 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, USER_AGENT } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import type { FetchFn } from '../src/http/httpClient.js';
-import { silentLogger } from '../src/logger.js';
+import { silentLogger, type Logger } from '../src/logger.js';
 import { emptyResponse, FakeClock, jsonResponse, rawResult, rawTracking } from './helpers.js';
 
 const BASE = 'https://tse.example/oficial/ele2026/6258';
+const PREFIX = 'ele2026_e006258_c0001';
 
 describe('createApp', () => {
   let dir: string;
@@ -18,9 +19,11 @@ describe('createApp', () => {
   });
   afterEach(() => fs.rm(dir, { recursive: true, force: true }));
 
-  it('polls only changed municipalities and writes versioned CSVs within the window', async () => {
+  it('exports only complete cycles, versioning in a folder with a fixed-name latest file', async () => {
     const clock = new FakeClock('2026-10-25T20:00:00Z');
-    let trackingCalls = 0;
+    const logger: Logger = { ...silentLogger, warn: vi.fn() };
+    let cycle = 0;
+    let firstOutraCall = true;
     const fetch = vi.fn<FetchFn>(async (url, init) => {
       const etag = (init.headers as Record<string, string>)['If-None-Match'];
       if (url === `${BASE}/config/mun-e006258-cm.json`) {
@@ -31,16 +34,20 @@ describe('createApp', () => {
         });
       }
       if (url === `${BASE}/dados/ac/ac-e006258-ab.json`) {
-        trackingCalls++;
-        if (trackingCalls === 2 && etag) return emptyResponse(304);
-        const ht = trackingCalls >= 3 ? '18:05:00' : '18:00:00';
-        return jsonResponse(rawTracking([{ code: '01007', ht }, { code: '01008' }]), { headers: { etag: `"ab${trackingCalls}"` } });
+        cycle++;
+        if (cycle === 2 && etag) return emptyResponse(304);
+        const ht = cycle >= 3 ? '18:05:00' : '18:00:00';
+        return jsonResponse(rawTracking([{ code: '01007', ht }, { code: '01008' }]), { headers: { etag: `"ab${cycle}"` } });
       }
       const match = /\/dados\/ac\/ac(\d{5})-c0001-e006258-u\.json$/.exec(url);
       if (match) {
-        const idg = String(100 + trackingCalls);
-        const ht = `18:0${trackingCalls}:00`;
-        return jsonResponse(rawResult({ cdabr: match[1], idg, ht }), { headers: { etag: `"r${idg}"` } });
+        if (match[1] === '01008' && firstOutraCall) {
+          firstOutraCall = false;
+          return jsonResponse({ broken: true });
+        }
+        return jsonResponse(rawResult({ cdabr: match[1], idg: String(100 + cycle), ht: `18:0${cycle}:00` }), {
+          headers: { etag: `"r${cycle}"` },
+        });
       }
       return emptyResponse(404);
     });
@@ -52,29 +59,36 @@ describe('createApp', () => {
       OFFICE_CODES: '1',
       OUTPUT_DIR: dir,
       POLL_INTERVAL_SECONDS: '30',
-      EXPORT_INTERVAL_SECONDS: '60',
-      SCHEDULE_END: '2026-10-25T20:01:45Z',
+      SCHEDULE_END: '2026-10-25T20:01:15Z',
     });
-    const outcome = await createApp(config, { fetch, clock, logger: silentLogger }).run();
-    expect(outcome).toBe('completed');
+    await expect(createApp(config, { fetch, clock, logger }).run()).resolves.toBe('completed');
 
+    // Cycle 1 leaves 01008 without a valid value: nothing may be published.
+    expect(logger.warn).toHaveBeenCalledWith(
+      'cycle left gaps, export skipped until every municipality has a value',
+      { missing: 1 },
+    );
+    // Cycle 2 (tracking 304) retries only 01008; cycle 3 only the municipality that moved.
     const resultCalls = fetch.mock.calls.map(([url]) => url).filter((u) => u.endsWith('-u.json'));
-    // Cycle 1: both municipalities. Cycle 2: 304. Cycles 3 and 4: only the one whose fingerprint moved.
-    expect(trackingCalls).toBe(4);
     expect(resultCalls).toEqual([
       `${BASE}/dados/ac/ac01007-c0001-e006258-u.json`,
+      `${BASE}/dados/ac/ac01008-c0001-e006258-u.json`,
       `${BASE}/dados/ac/ac01008-c0001-e006258-u.json`,
       `${BASE}/dados/ac/ac01007-c0001-e006258-u.json`,
     ]);
     expect((fetch.mock.calls[0]?.[1].headers as Record<string, string>)['User-Agent']).toBe(USER_AGENT);
 
-    // Real fs I/O interleaves with virtual time, so how many scheduled exports land varies;
-    // the invariant is that the final export leaves the newest valid state on disk.
-    const files = (await fs.readdir(dir)).sort();
-    expect(files.length).toBeGreaterThanOrEqual(1);
-    for (const file of files) expect(file).toMatch(/^ele2026_e006258_c0001_20261025T\d{9}Z\.csv$/);
-    const latest = await fs.readFile(path.join(dir, files.at(-1) as string), 'utf8');
-    expect(latest.trimEnd().split('\n')).toHaveLength(5);
-    expect(latest).toContain(',18:03:00,');
+    expect((await fs.readdir(dir)).sort()).toEqual([PREFIX, `${PREFIX}.csv`]);
+    const versions = (await fs.readdir(path.join(dir, PREFIX))).sort();
+    expect(versions).toEqual(['20261025T200030000Z.csv', '20261025T200100000Z.csv']);
+
+    const first = await fs.readFile(path.join(dir, PREFIX, versions[0] as string), 'utf8');
+    const newest = await fs.readFile(path.join(dir, PREFIX, versions[1] as string), 'utf8');
+    const latest = await fs.readFile(path.join(dir, `${PREFIX}.csv`), 'utf8');
+    for (const csv of [first, newest]) {
+      expect(new Set(csv.trimEnd().split('\n').slice(1).map((l) => l.split(',')[5]))).toEqual(new Set(['01007', '01008']));
+    }
+    expect(latest).toBe(newest);
+    expect(newest).toContain(',18:03:00,');
   });
 });

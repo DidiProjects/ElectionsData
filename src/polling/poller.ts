@@ -14,6 +14,10 @@ export interface PollStats {
   notFound: number;
   invalid: number;
   failed: number;
+  /** Targets with neither a stored valid result nor a confirmed 404. */
+  missing: number;
+  /** True when every target is accounted for, i.e. an export would not have gaps. */
+  complete: boolean;
 }
 
 export interface Poller {
@@ -39,6 +43,8 @@ const emptyStats = (): PollStats => ({
   notFound: 0,
   invalid: 0,
   failed: 0,
+  missing: 0,
+  complete: false,
 });
 
 /**
@@ -53,6 +59,7 @@ export function createPoller(options: PollerOptions): Poller {
   const trackingSnapshots = new Map<string, TrackingSnapshot>();
   /** Fingerprint each target was last successfully reconciled against. */
   const reconciled = new Map<string, string>();
+  const notPublished = new Set<string>();
 
   const loadMunicipalities = async (signal?: AbortSignal): Promise<Municipality[] | null> => {
     if (municipalities) return municipalities;
@@ -115,6 +122,7 @@ export function createPoller(options: PollerOptions): Poller {
       switch (response.kind) {
         case 'updated':
           store.update(target, response.value, response.etag);
+          notPublished.delete(key);
           stats.updated++;
           markReconciled();
           return;
@@ -125,6 +133,7 @@ export function createPoller(options: PollerOptions): Poller {
         case 'not_found':
           // e.g. a state with no runoff for governor: nothing to fetch until progress moves.
           stats.notFound++;
+          if (!stored) notPublished.add(key);
           markReconciled();
           return;
         case 'invalid':
@@ -174,6 +183,14 @@ export function createPoller(options: PollerOptions): Poller {
         ({ target, fingerprint }) => fetchTarget(target, fingerprint, stats, signal),
         signal,
       );
+
+      for (const municipality of list) {
+        for (const officeCode of options.officeCodes) {
+          const target: PollTarget = { municipality, officeCode };
+          if (!store.get(target) && !notPublished.has(targetKey(target))) stats.missing++;
+        }
+      }
+      stats.complete = stats.missing === 0 && !signal?.aborted;
       return stats;
     },
   };

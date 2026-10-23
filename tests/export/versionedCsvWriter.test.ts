@@ -21,26 +21,55 @@ describe('createVersionedCsvWriter', () => {
   });
   afterEach(() => fs.rm(dir, { recursive: true, force: true }));
 
-  const files = async () => (await fs.readdir(dir)).sort();
+  const versions = async (prefix = 'p') => (await fs.readdir(path.join(dir, prefix))).sort();
+  const latest = (prefix = 'p') => fs.readFile(path.join(dir, `${prefix}.csv`), 'utf8');
 
-  it('creates the output directory and writes a timestamped file', async () => {
-    const outputDir = path.join(dir, 'nested', 'out');
+  it('writes a version inside the prefix folder and the fixed-name latest file beside it', async () => {
+    const outputDir = path.join(dir, 'nested');
     const writer = createVersionedCsvWriter({ outputDir, maxVersions: 3, clock });
     const outcome = await writer.write('p', 'a\n');
-    expect(outcome).toEqual({ written: true, filePath: path.join(outputDir, 'p_20261025T200000000Z.csv'), pruned: [] });
-    expect(await fs.readFile(outcome.filePath as string, 'utf8')).toBe('a\n');
-    expect(await fs.readdir(outputDir)).toEqual(['p_20261025T200000000Z.csv']);
+    expect(outcome).toEqual({
+      written: true,
+      versionPath: path.join(outputDir, 'p', '20261025T200000000Z.csv'),
+      latestPath: path.join(outputDir, 'p.csv'),
+      pruned: [],
+    });
+    expect(await fs.readFile(outcome.versionPath as string, 'utf8')).toBe('a\n');
+    expect(await fs.readFile(outcome.latestPath, 'utf8')).toBe('a\n');
+    expect((await fs.readdir(outputDir)).sort()).toEqual(['p', 'p.csv']);
+  });
+
+  it('replaces the latest file with each new version', async () => {
+    const writer = createVersionedCsvWriter({ outputDir: dir, maxVersions: 3, clock });
+    await writer.write('p', '1');
+    clock.advance(1000);
+    await writer.write('p', '2');
+    expect(await latest()).toBe('2');
+    expect(await versions()).toEqual(['20261025T200000000Z.csv', '20261025T200001000Z.csv']);
   });
 
   it('skips content identical to the latest version', async () => {
     const writer = createVersionedCsvWriter({ outputDir: dir, maxVersions: 3, clock });
     await writer.write('p', 'a\n');
     clock.advance(1000);
-    expect(await writer.write('p', 'a\n')).toEqual({ written: false, filePath: null, pruned: [] });
-    expect(await files()).toHaveLength(1);
+    expect(await writer.write('p', 'a\n')).toEqual({
+      written: false,
+      versionPath: null,
+      latestPath: path.join(dir, 'p.csv'),
+      pruned: [],
+    });
+    expect(await versions()).toHaveLength(1);
   });
 
-  it('compares against the newest file on disk after a restart', async () => {
+  it('restores a missing latest file even when the content did not change', async () => {
+    const writer = createVersionedCsvWriter({ outputDir: dir, maxVersions: 3, clock });
+    await writer.write('p', 'a\n');
+    await fs.rm(path.join(dir, 'p.csv'));
+    expect((await writer.write('p', 'a\n')).written).toBe(false);
+    expect(await latest()).toBe('a\n');
+  });
+
+  it('compares against the newest version on disk after a restart', async () => {
     await createVersionedCsvWriter({ outputDir: dir, maxVersions: 3, clock }).write('p', 'a\n');
     clock.advance(1000);
     const restarted = createVersionedCsvWriter({ outputDir: dir, maxVersions: 3, clock });
@@ -48,39 +77,38 @@ describe('createVersionedCsvWriter', () => {
     expect((await restarted.write('p', 'b\n')).written).toBe(true);
   });
 
-  it('keeps only the newest maxVersions files per prefix', async () => {
+  it('keeps only the newest maxVersions versions per prefix', async () => {
     const writer = createVersionedCsvWriter({ outputDir: dir, maxVersions: 2, clock });
     for (const content of ['1', '2', '3']) {
       await writer.write('p', content);
       clock.advance(1000);
     }
     await writer.write('other', 'x');
-    expect(await files()).toEqual([
-      'other_20261025T200003000Z.csv',
-      'p_20261025T200001000Z.csv',
-      'p_20261025T200002000Z.csv',
-    ]);
+    expect(await versions()).toEqual(['20261025T200001000Z.csv', '20261025T200002000Z.csv']);
+    expect(await versions('other')).toEqual(['20261025T200003000Z.csv']);
+    expect(await latest()).toBe('3');
   });
 
-  it('reports pruned files', async () => {
+  it('reports pruned versions', async () => {
     const writer = createVersionedCsvWriter({ outputDir: dir, maxVersions: 1, clock });
     await writer.write('p', '1');
     clock.advance(1000);
-    expect((await writer.write('p', '2')).pruned).toEqual(['p_20261025T200000000Z.csv']);
+    expect((await writer.write('p', '2')).pruned).toEqual(['20261025T200000000Z.csv']);
   });
 
-  it('ignores files from other prefixes sharing the same start and unrelated files', async () => {
-    await fs.writeFile(path.join(dir, 'p_x_20261025T100000000Z.csv'), 'other');
-    await fs.writeFile(path.join(dir, 'p_notes.txt'), 'keep');
+  it('ignores unrelated files in the versions folder', async () => {
+    await fs.mkdir(path.join(dir, 'p'));
+    await fs.writeFile(path.join(dir, 'p', 'notes.txt'), 'keep');
     const writer = createVersionedCsvWriter({ outputDir: dir, maxVersions: 1, clock });
     await writer.write('p', '1');
     clock.advance(1000);
     await writer.write('p', '2');
-    expect(await files()).toEqual(['p_20261025T200001000Z.csv', 'p_notes.txt', 'p_x_20261025T100000000Z.csv']);
+    expect(await versions()).toEqual(['20261025T200001000Z.csv', 'notes.txt']);
   });
 
   it('leaves no temporary file behind', async () => {
     await createVersionedCsvWriter({ outputDir: dir, maxVersions: 3, clock }).write('p', 'a');
-    expect((await files()).some((f) => f.endsWith('.tmp'))).toBe(false);
+    const all = [...(await fs.readdir(dir)), ...(await versions())];
+    expect(all.some((f) => f.endsWith('.tmp'))).toBe(false);
   });
 });
