@@ -1,6 +1,6 @@
 import type { Clock } from '../src/clock.js';
-import type { Municipality } from '../src/domain/types.js';
-import type { RawMunicipalityResult, RawTrackingFile } from '../src/tse/rawTypes.js';
+import type { Section } from '../src/domain/types.js';
+import type { RawSectionList } from '../src/urna/rawTypes.js';
 
 interface PendingSleep {
   at: number;
@@ -62,77 +62,6 @@ export class FakeClock implements Clock {
   }
 }
 
-export const municipality = (overrides: Partial<Municipality> = {}): Municipality => ({
-  state: 'ac',
-  code: '01007',
-  ibgeCode: '1200138',
-  name: 'CIDADE TESTE',
-  ...overrides,
-});
-
-export function rawResult(overrides: Partial<RawMunicipalityResult> = {}): RawMunicipalityResult {
-  return {
-    ele: '6258',
-    t: '2',
-    tpabr: 'mu',
-    cdabr: '01007',
-    dg: '25/10/2026',
-    hg: '18:00:00',
-    idg: '100',
-    dt: '25/10/2026',
-    ht: '17:59:00',
-    and: 'p',
-    carg: [
-      {
-        cd: '1',
-        nmn: 'Presidente',
-        agr: [
-          {
-            com: 'AAA/BBB',
-            par: [
-              {
-                sg: 'AAA',
-                cand: [{ n: '11', nm: 'CANDIDATA UM', nmu: 'UM', st: '', e: 'n', vap: '300', pvapn: '60,5' }],
-              },
-            ],
-          },
-          {
-            com: 'CCC',
-            par: [
-              {
-                sg: 'CCC',
-                cand: [{ n: '22', nm: 'CANDIDATO DOIS', nmu: 'DOIS', st: '', e: 'n', vap: '200', pvapn: '39,5' }],
-              },
-            ],
-          },
-        ],
-      },
-    ],
-    s: { ts: '40', st: '20', pstn: '50' },
-    e: { te: '1000', c: '600', a: '400' },
-    v: { vv: '500', vb: '40', tvn: '60' },
-    ...overrides,
-  };
-}
-
-export function rawTracking(entries: Array<{ code: string; and?: string; ht?: string; st?: string }>): RawTrackingFile {
-  return {
-    ele: '6258',
-    idg: '1',
-    abr: [
-      { tpabr: 'uf', cdabr: 'AC', and: 'p', dt: '25/10/2026', ht: '18:00:00', s: { st: '0' } },
-      ...entries.map((e) => ({
-        tpabr: 'mun',
-        cdabr: e.code,
-        and: e.and ?? 'p',
-        dt: '25/10/2026',
-        ht: e.ht ?? '18:00:00',
-        s: { st: e.st ?? '10' },
-      })),
-    ],
-  };
-}
-
 export function jsonResponse(body: unknown, init: { status?: number; headers?: Record<string, string> } = {}): Response {
   return new Response(JSON.stringify(body), {
     status: init.status ?? 200,
@@ -140,5 +69,180 @@ export function jsonResponse(body: unknown, init: { status?: number; headers?: R
   });
 }
 
+export const bytesResponse = (body: Buffer, headers: Record<string, string> = {}): Response =>
+  new Response(new Uint8Array(body), { status: 200, headers });
+
 export const emptyResponse = (status: number, headers: Record<string, string> = {}): Response =>
   new Response(null, { status, headers });
+
+// ── Minimal DER encoder, enough to build synthetic ballot box reports ──────────
+
+const encodeLength = (length: number): Buffer => {
+  if (length < 0x80) return Buffer.from([length]);
+  const bytes: number[] = [];
+  for (let l = length; l > 0; l = Math.floor(l / 256)) bytes.unshift(l % 256);
+  return Buffer.from([0x80 | bytes.length, ...bytes]);
+};
+
+export const tlv = (identifier: number, content: Buffer): Buffer =>
+  Buffer.concat([Buffer.from([identifier]), encodeLength(content.length), content]);
+
+const intBytes = (value: number): Buffer => {
+  const bytes: number[] = [];
+  let v = value;
+  do {
+    bytes.unshift(v & 0xff);
+    v = Math.floor(v / 256);
+  } while (v > 0);
+  if ((bytes[0] as number) & 0x80) bytes.unshift(0);
+  return Buffer.from(bytes);
+};
+
+export const der = {
+  int: (v: number) => tlv(0x02, intBytes(v)),
+  enumerated: (v: number) => tlv(0x0a, intBytes(v)),
+  str: (s: string) => tlv(0x1b, Buffer.from(s, 'latin1')),
+  octets: (b: Buffer) => tlv(0x04, b),
+  seq: (...items: Buffer[]) => tlv(0x30, Buffer.concat(items)),
+  /** Context-specific primitive [n] holding an unsigned integer. */
+  ctxInt: (n: number, v: number) => tlv(0x80 | n, intBytes(v)),
+  /** Context-specific constructed [n]. */
+  ctx: (n: number, ...items: Buffer[]) => tlv(0xa0 | n, Buffer.concat(items)),
+};
+
+export interface FakeVote {
+  type: number;
+  votes?: number;
+  party?: number;
+  number?: number;
+}
+
+export interface FakeOffice {
+  electionId: number;
+  officeCode: number;
+  eligible: number;
+  turnout: number;
+  votes: FakeVote[];
+}
+
+const SIGNATURE = Buffer.alloc(8, 0xab);
+
+const encodeVote = (v: FakeVote, order: number): Buffer =>
+  der.seq(
+    der.ctxInt(1, v.type),
+    ...(v.votes === undefined ? [] : [der.ctxInt(2, v.votes)]),
+    ...(v.number === undefined ? [] : [der.ctx(3, der.int(v.party ?? v.number), der.int(v.number))]),
+    der.int(order),
+    der.octets(SIGNATURE),
+  );
+
+/** Same layout as a real 2026 BU: envelope -> OCTET STRING -> report. */
+export function buildBallotBoxReport(opts: {
+  municipality: number;
+  zone: number;
+  section: number;
+  offices: FakeOffice[];
+  emittedAt?: string;
+  openedAt?: string;
+  closedAt?: string;
+}): Buffer {
+  const header = der.seq(der.str('20261025T170500'), der.ctxInt(2, 3220));
+  const identity = der.seq(der.seq(der.int(opts.municipality), der.int(opts.zone)), der.int(1031), der.int(opts.section));
+  const byElection = new Map<number, FakeOffice[]>();
+  for (const o of opts.offices) byElection.set(o.electionId, [...(byElection.get(o.electionId) ?? []), o]);
+
+  const elections = [...byElection].map(([electionId, offices]) =>
+    der.seq(
+      der.int(electionId),
+      der.int(offices[0]?.eligible ?? 0),
+      der.int(offices[0]?.eligible ?? 0),
+      der.int(0),
+      der.seq(
+        ...offices.map((o) =>
+          der.seq(
+            der.enumerated(1),
+            der.int(o.turnout),
+            der.seq(der.seq(der.ctxInt(1, o.officeCode), der.int(1), der.seq(...o.votes.map(encodeVote)))),
+          ),
+        ),
+      ),
+      der.octets(SIGNATURE),
+    ),
+  );
+
+  const report = der.seq(
+    header,
+    der.enumerated(2),
+    der.seq(der.enumerated(1), der.str('10.0.0.0 - Test')),
+    identity,
+    der.str(opts.emittedAt ?? '20261025T170200'),
+    der.ctx(0, der.str(opts.openedAt ?? '20261025T080000'), der.str(opts.closedAt ?? '20261025T170000')),
+    der.int(100),
+    der.seq(...elections),
+    der.seq(der.str('0000')),
+  );
+  return der.seq(header, der.enumerated(2), der.ctx(0, identity), der.enumerated(1), der.octets(report));
+}
+
+export const section = (overrides: Partial<Section> = {}): Section => ({
+  state: 'ac',
+  municipalityCode: '01066',
+  municipalityName: 'CIDADE TESTE',
+  zone: '0004',
+  section: '0077',
+  aggregated: [],
+  publishedAt: '25/10/2026 21:00:00',
+  ...overrides,
+});
+
+export function rawSectionList(
+  entries: Array<{ mun?: string; zone?: string; ns: string; nsa?: string[]; nsp?: string; published?: string }>,
+  pleito = '3221',
+): RawSectionList {
+  const byMun = new Map<string, Map<string, RawSectionList['abr'][number]['mu'][number]['zon'][number]['sec']>>();
+  for (const e of entries) {
+    const zones = byMun.get(e.mun ?? '01066') ?? new Map();
+    const secs = zones.get(e.zone ?? '0004') ?? [];
+    const [da, ha] = e.published?.split(' ') ?? [];
+    secs.push({
+      ns: e.ns,
+      ...(e.nsa ? { nsa: e.nsa } : {}),
+      ...(e.nsp ? { nsp: e.nsp } : {}),
+      ...(da && ha ? { da, ha } : {}),
+    });
+    zones.set(e.zone ?? '0004', secs);
+    byMun.set(e.mun ?? '01066', zones);
+  }
+  return {
+    cdp: pleito,
+    abr: [
+      {
+        cd: 'ac',
+        mu: [...byMun].map(([cd, zones]) => ({
+          cd,
+          nm: `CIDADE ${cd}`,
+          zon: [...zones].map(([zcd, sec]) => ({ cd: zcd, sec })),
+        })),
+      },
+    ],
+  };
+}
+
+export const rawAux = (hashes: Array<{ hash: string; st?: string; files?: Array<{ nm: string; tp: string }> }>) => ({
+  dg: '25/10/2026',
+  hg: '21:00:00',
+  idg: '1',
+  f: 'o',
+  st: 'Totalizada',
+  hashes: hashes.map((h) => ({
+    hash: h.hash,
+    dr: '25/10/2026',
+    hr: '17:30:00',
+    st: h.st ?? 'Totalizado',
+    arq: h.files ?? [{ nm: 'o03221ac0106600040077-bu.dat', tp: 'bu' }],
+  })),
+});
+
+export const rawCandidates = (candidates: Array<{ n: string; nmu: string }>) => ({
+  carg: [{ agr: [{ par: [{ cand: candidates }, {}] }] }],
+});
