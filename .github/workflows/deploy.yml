@@ -15,6 +15,18 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      # The repository and migration tests only run with TEST_DATABASE_URL set.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: elections_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d elections_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -33,6 +45,8 @@ jobs:
 
       - name: Run tests
         run: npm run test:coverage
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:test@localhost:5432/elections_test
 
   deploy:
     runs-on: ubuntu-latest
@@ -81,30 +95,60 @@ jobs:
         run: |
           REPO_LOWER="${{ steps.repo.outputs.name }}"
           OUTPUT_HOST_DIR="${{ vars.OUTPUT_HOST_DIR || '/srv/elections-data/output' }}"
-          STATE_HOST_DIR="${{ vars.STATE_HOST_DIR || '/srv/elections-data/state' }}"
           ssh -o StrictHostKeyChecking=no -p 1024 diego@${{ vars.TAILSCALE_IP }} << EOF
 
           echo "${{ secrets.GITHUB_TOKEN }}" | sudo docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
           sudo docker pull ghcr.io/${REPO_LOWER}:latest
 
-          # The container runs as the image's "node" user (uid 1000) and must own both folders.
-          sudo mkdir -p "${OUTPUT_HOST_DIR}" "${STATE_HOST_DIR}"
-          sudo chown 1000:1000 "${OUTPUT_HOST_DIR}" "${STATE_HOST_DIR}"
+          # ── Network and Postgres ───────────────────────────────────────
+          # The worker reaches the database by name (elections-postgres) on a
+          # dedicated network, without publishing 5432 on the host.
+          sudo docker network inspect elections-network >/dev/null 2>&1 || \
+            sudo docker network create elections-network
+
+          if ! sudo docker ps -a --format '{{.Names}}' | grep -q '^elections-postgres$'; then
+            sudo docker run -d --name elections-postgres \
+              --label project=elections-data \
+              --network=elections-network \
+              --restart=unless-stopped \
+              -e POSTGRES_DB=elections \
+              -e POSTGRES_USER=elections \
+              -e POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
+              -v elections_postgres_data:/var/lib/postgresql/data \
+              postgres:16-alpine
+          else
+            sudo docker start elections-postgres || true
+          fi
+
+          echo "Waiting for Postgres to accept connections..."
+          for i in \$(seq 1 30); do
+            if sudo docker exec elections-postgres pg_isready -U elections -d elections >/dev/null 2>&1; then
+              echo "Postgres ready"
+              break
+            fi
+            [ \$i -eq 30 ] && { echo "Postgres did not come up in time"; exit 1; }
+            sleep 2
+          done
+
+          # The container runs as the image's "node" user (uid 1000) and must own the CSV folder.
+          sudo mkdir -p "${OUTPUT_HOST_DIR}"
+          sudo chown 1000:1000 "${OUTPUT_HOST_DIR}"
 
           sudo docker stop elections-data-worker || true
           sudo docker rm elections-data-worker || true
 
-          # No published port: the worker only reads env and writes to the mounted folder.
+          # No published port: the worker only reads env, talks to Postgres and writes CSVs.
+          # Migrations run on start; a failure exits 1, which the next step catches.
           sudo docker run -d --name elections-data-worker \
             --label app=elections-data-worker \
             --label project=elections-data \
             --restart=unless-stopped \
+            --network=elections-network \
             --log-opt max-size=10m --log-opt max-file=3 \
             -v "${OUTPUT_HOST_DIR}:/data/output" \
-            -v "${STATE_HOST_DIR}:/data/state" \
             -e OUTPUT_DIR=/data/output \
-            -e STATE_DIR=/data/state \
+            -e DATABASE_URL="postgresql://elections:${{ secrets.POSTGRES_PASSWORD }}@elections-postgres:5432/elections" \
             -e ELECTION_CYCLE="${{ vars.ELECTION_CYCLE }}" \
             -e PLEITO_CODE="${{ vars.PLEITO_CODE }}" \
             -e OFFICE_CODES="${{ vars.OFFICE_CODES }}" \
@@ -128,8 +172,8 @@ jobs:
           echo "Waiting for the container to start..."
           sleep 10
 
-          # Invalid configuration makes the worker exit 1 right away and Docker restart it,
-          # so "running with no restarts" after 10s means the env was accepted.
+          # Invalid configuration or a failed migration makes the worker exit 1 right away
+          # and Docker restart it, so "running with no restarts" after 10s means it started.
           if [ "$(sudo docker inspect -f '{{.State.Status}}/{{.RestartCount}}' elections-data-worker 2>/dev/null)" = "running/0" ]; then
             echo "elections-data-worker is running"
             sudo docker logs --tail 20 elections-data-worker
