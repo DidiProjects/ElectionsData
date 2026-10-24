@@ -46,7 +46,7 @@ O decodificador de BU foi conferido contra o resultado oficial do 1º turno. A s
 
 **Vazão:** a primeira requisição de cada BU é um cache miss no CDN e leva cerca de 0,5 s, contra cerca de 50 ms nas seguintes. Isso dá, na prática, cerca de `CONCURRENCY` seções por segundo. Com 8, o worker processa cerca de 500 seções por minuto, e o Brasil inteiro (cerca de 470 mil seções) levaria cerca de 15 h.
 
-**Persistência:** os BUs decodificados ficam gravados em `STATE_DIR`, um volume separado dos CSVs. São arquivos JSON, um por zona eleitoral, separados por pleito (`p3221/{uf}/{município}-{zona}.json`). O primeiro job depois de um start ou redeploy restaura tudo do volume, e os jobs seguintes só gravam as zonas que mudaram. Num `docker stop`, o job em andamento grava o que já baixou antes de sair. Um arquivo ilegível é ignorado e suas seções são baixadas de novo.
+**Persistência:** os BUs decodificados ficam no Postgres (ver [Banco de dados](#banco-de-dados)). O primeiro job depois de um start ou redeploy restaura tudo do banco e só baixa o que falta. Ao fim de cada job, as seções novas são gravadas em lotes de 500, cada lote numa transação. Num `docker stop`, o job em andamento grava o que já baixou antes de sair. Se o banco estiver fora do ar, o worker continua coletando e tenta gravar e restaurar de novo no job seguinte.
 
 **Orçamento por job:** um job para de iniciar novas seções quando seu período (`POLL_INTERVAL_SECONDS`) se esgota, exporta e deixa o resto para o próximo. Um lote grande, como o de SP, não segura o export por uma hora.
 
@@ -88,6 +88,48 @@ Particularidades:
 - **Votável sem voto não tem linha.** O próprio BU omite quem não recebeu voto, então linha ausente significa 0.
 - **Candidatura anulada.** Um voto nominal num número que não está na lista oficial (por exemplo, candidatura anulada) sai com `NM_VOTAVEL` vazio. O BU registra o voto como nominal, e o resultado oficial o conta como nulo técnico.
 
+## Banco de dados
+
+Postgres 16, com o schema em `migrations/`. As migrations são aplicadas pelo próprio worker no start, com advisory lock, e uma falha encerra o processo com código 1.
+
+| Tabela | Conteúdo |
+|---|---|
+| `secao` | uma linha por seção com BU: UF, município, zona, seção, seções agregadas, horário de publicação, hash e horários da urna |
+| `resultado_cargo` | aptos e comparecimento por seção × eleição × cargo |
+| `voto` | tipo, número e quantidade, na ordem do BU |
+| `candidato` | nome na urna por eleição × cargo × UF |
+
+O banco guarda **todos** os cargos de cada BU. O `OFFICE_CODES` filtra só o CSV. A view `votos_secao` entrega o mesmo formato longo do CSV:
+
+```sql
+-- Presidente por UF
+SELECT sg_uf, nm_votavel, sum(qt_votos)
+FROM votos_secao WHERE cd_cargo = 1 AND tp_voto = 'nominal'
+GROUP BY 1, 2 ORDER BY 1, 3 DESC;
+```
+
+Para consultar, rode `docker exec -it elections-postgres psql -U elections -d elections`. No compose local, a porta também fica em `127.0.0.1:${POSTGRES_HOST_PORT}`.
+
+Validação: depois de um backfill do 1º turno do AC (2.270 seções), as somas da view batem exatamente com o resultado oficial da UF para presidente e governador, em cada candidato, brancos e nulos. No caso dos nulos, eles fecham contando os votos em candidatura anulada.
+
+## Carga avulsa (`MODE=backfill`)
+
+Mesma imagem e mesma configuração. Com `MODE=backfill`, o worker ignora a janela, roda jobs um atrás do outro até não restar nenhuma seção publicada por baixar, grava tudo no banco, gera um CSV e **sai**. Depois, o worker normal (`MODE=job`) começa já com esses dados.
+
+```bash
+# local, com o compose
+docker compose up -d postgres
+docker compose run --rm -e MODE=backfill -e PLEITO_CODE=3220 worker
+
+# no servidor, ao lado do deploy (mesma rede e banco)
+sudo docker run --rm --network elections-network \
+  -e MODE=backfill -e DATABASE_URL="postgresql://elections:<senha>@elections-postgres:5432/elections" \
+  -e ELECTION_CYCLE=ele2026 -e PLEITO_CODE=3220 -e OFFICE_CODES=1,3 -e POLL_INTERVAL_SECONDS=60 \
+  -v /srv/elections-data/output:/data/output ghcr.io/didiprojects/electionsdata:latest
+```
+
+Serve para carregar um pleito já publicado (o 1º turno), alcançar um lote grande no domingo ou recuperar um início atrasado. **Antes** da apuração do 2º turno não há o que carregar, porque os BUs ainda não existem. Medição: o AC do 1º turno (2.270 seções) levou 3 min 56 s com `CONCURRENCY=8`.
+
 ## Agenda
 
 - `SCHEDULE_START`: antes desse horário, o worker só espera.
@@ -105,7 +147,8 @@ Depois que a janela fecha, o processo continua de pé, sem fazer nada. Se ele sa
 | `OFFICE_CODES` | sim | — | Cargos exportados, ex. `1` ou `1,3` |
 | `STATES` | não | todas + `zz` | UFs separadas por vírgula |
 | `OUTPUT_DIR` | sim | `/data/output` na imagem | Pasta dos CSVs |
-| `STATE_DIR` | sim | `/data/state` na imagem | BUs já baixados, preservados entre restarts |
+| `DATABASE_URL` | sim | — (o compose monta a partir de `POSTGRES_PASSWORD`) | Postgres com os BUs decodificados |
+| `MODE` | não | `job` | `job` (janela e jobs periódicos) ou `backfill` (carga avulsa que termina sozinha) |
 | `OUTPUT_PREFIX` | não | `secoes` | Prefixo dos arquivos, ex. `secoes_2t2026` |
 | `MAX_CSV_VERSIONS` | não | `1000` | Versões numeradas mantidas (o `_current` não conta) |
 | `POLL_INTERVAL_SECONDS` | sim | — | Período e orçamento de tempo do job (≥ 30) |
@@ -124,16 +167,22 @@ Configuração inválida encerra o processo com código 1, listando todos os pro
 
 ```bash
 npm install
-npm test                # suíte completa
-npm run test:coverage   # com cobertura
+npm test                # suíte sem banco (os testes de Postgres aparecem como pulados)
 npm run typecheck
 npm run build && node dist/main.js
 ```
 
-Para rodar localmente com Docker:
+Os testes de migrations, do repositório e o teste de integração com banco só rodam com `TEST_DATABASE_URL`. Cada arquivo de teste cria um schema descartável:
 
 ```bash
-cp .env.example .env    # ajuste pleito, cargos e janela
+docker run -d --name ed-test-pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=elections_test -p 54329:5432 postgres:16-alpine
+TEST_DATABASE_URL=postgres://postgres:test@localhost:54329/elections_test npm run test:coverage
+```
+
+Para rodar localmente com Docker (worker + Postgres):
+
+```bash
+cp .env.example .env    # ajuste pleito, cargos, janela e POSTGRES_PASSWORD
 docker compose up --build
 ```
 
@@ -143,14 +192,17 @@ Os CSVs aparecem em `OUTPUT_HOST_DIR`, por padrão `./output`.
 
 `.github/workflows/deploy.yml`:
 
-- Em todo push e PR para `main`: roda typecheck e testes.
-- Em push para `main`: publica a imagem no GHCR e, via Tailscale + SSH, sobe o container `elections-data-worker` no servidor, montando `OUTPUT_HOST_DIR` em `/data/output`.
+- Em todo push e PR para `main`: roda typecheck e a suíte completa, com um Postgres de serviço e `TEST_DATABASE_URL`.
+- Em push para `main`: publica a imagem no GHCR e, via Tailscale + SSH, prepara o servidor e sobe o worker:
+  - cria a rede `elections-network`, se ainda não existir;
+  - sobe o `elections-postgres`, com volume `elections_postgres_data`, e espera o `pg_isready`;
+  - sobe o container `elections-data-worker`, montando `OUTPUT_HOST_DIR` em `/data/output`.
 
 Configuração no GitHub:
 
-- **Secrets:** `TAILSCALE_CLIENT_SECRET` e `SSH_PRIVATE_KEY`.
+- **Secrets:** `TAILSCALE_CLIENT_SECRET`, `SSH_PRIVATE_KEY` e `POSTGRES_PASSWORD`.
 - **Variables:** `TAILSCALE_IP`, `ELECTION_CYCLE`, `PLEITO_CODE` e `OFFICE_CODES`.
-- **Variables opcionais:** `STATES`, `SCHEDULE_START`, `SCHEDULE_END`, `OUTPUT_HOST_DIR` (padrão `/srv/elections-data/output`), `STATE_HOST_DIR` (padrão `/srv/elections-data/state`), `OUTPUT_PREFIX`, `MAX_CSV_VERSIONS`, `POLL_INTERVAL_SECONDS`, `MAX_RETRIES`, `CONCURRENCY` e `LOG_LEVEL`.
+- **Variables opcionais:** `STATES`, `SCHEDULE_START`, `SCHEDULE_END`, `OUTPUT_HOST_DIR` (padrão `/srv/elections-data/output`), `OUTPUT_PREFIX`, `MAX_CSV_VERSIONS`, `POLL_INTERVAL_SECONDS`, `MAX_RETRIES`, `CONCURRENCY` e `LOG_LEVEL`.
 
 ## Estrutura
 
@@ -164,7 +216,9 @@ src/
   http/                  cliente HTTP (JSON e binário) com retry, timeout, ETag e pausa compartilhada
   urna/                  URLs, tipos, validação, leitor BER e decodificador do BU
   polling/               job de coleta guiado pela lista de seções
-  results/               BUs coletados por seção, em memória e no volume de estado
+  db/                    pool do Postgres, transações e migrations
+  results/               BUs coletados por seção, em memória e no Postgres
+migrations/              schema SQL, aplicado pelo worker no start
   export/                CSV longo, nomes de candidatos e versionamento _N / _current
   scheduler/             janela de execução e rotina periódica
 tests/                   testes unitários (Vitest), espelhando src/
