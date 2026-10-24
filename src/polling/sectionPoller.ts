@@ -1,7 +1,7 @@
 import type { Clock } from '../clock.js';
-import type { Section } from '../domain/types.js';
+import type { Section, SectionResult } from '../domain/types.js';
 import type { Logger } from '../logger.js';
-import { zoneKey, type SectionRepository, type ZoneRef } from '../results/sectionRepository.js';
+import type { SectionRepository } from '../results/sectionRepository.js';
 import { sectionKey, type SectionStore } from '../results/sectionStore.js';
 import type { UrnaClient } from '../urna/urnaClient.js';
 import { forEachWithConcurrency } from './concurrency.js';
@@ -21,9 +21,9 @@ export interface SectionPollStats {
   /** Due sections left for the next job because this one ran out of time. */
   deferred: number;
   stored: number;
-  /** Sections loaded from the state volume on the first job after a start. */
+  /** Sections loaded from the database on the first job after a start. */
   restored: number;
-  persistedZones: number;
+  persisted: number;
 }
 
 export interface SectionPoller {
@@ -55,8 +55,11 @@ const emptyStats = (): SectionPollStats => ({
   deferred: 0,
   stored: 0,
   restored: 0,
-  persistedZones: 0,
+  persisted: 0,
 });
+
+/** Sections written per transaction: bounds statement size during a large batch. */
+const PERSIST_BATCH = 500;
 
 /**
  * Each job reads one section list per state (conditional GET, usually a 304) and fetches
@@ -68,8 +71,8 @@ export function createSectionPoller(options: SectionPollerOptions): SectionPolle
   const lists = new Map<string, { etag: string | null; sections: Section[] }>();
   /** Publication stamp each section was last successfully fetched for. */
   const reconciled = new Map<string, string>();
-  /** Zones with sections not yet written to the state volume (kept across jobs on failure). */
-  const dirtyZones = new Map<string, ZoneRef>();
+  /** Sections not yet written to the database (kept across jobs on failure). */
+  const unsaved = new Map<string, SectionResult>();
   let restored = false;
 
   const restore = async (stats: SectionPollStats): Promise<void> => {
@@ -81,20 +84,27 @@ export function createSectionPoller(options: SectionPollerOptions): SectionPolle
       }
       stats.restored = results.length;
       restored = true;
-      if (results.length > 0) logger.info('restored sections from the state volume', { sections: results.length });
+      if (results.length > 0) logger.info('restored sections from the database', { sections: results.length });
     } catch (error) {
-      logger.error('state volume unreadable, downloading as if empty', { error: (error as Error).message });
+      logger.error('database unreadable, downloading as if empty; will retry the restore next job', {
+        error: (error as Error).message,
+      });
     }
   };
 
   const persist = async (stats: SectionPollStats): Promise<void> => {
-    for (const [key, zone] of dirtyZones) {
+    const entries = [...unsaved];
+    for (let i = 0; i < entries.length; i += PERSIST_BATCH) {
+      const batch = entries.slice(i, i + PERSIST_BATCH);
       try {
-        await repository.saveZone(zone, store.inZone(zone.state, zone.municipalityCode, zone.zone));
-        dirtyZones.delete(key);
-        stats.persistedZones++;
+        await repository.save(batch.map(([, r]) => r));
+        for (const [key] of batch) unsaved.delete(key);
+        stats.persisted += batch.length;
       } catch (error) {
-        logger.error('could not persist zone, will retry next job', { zone: key, error: (error as Error).message });
+        logger.error('could not persist sections, will retry next job', {
+          sections: batch.length,
+          error: (error as Error).message,
+        });
       }
     }
   };
@@ -148,13 +158,10 @@ export function createSectionPoller(options: SectionPollerOptions): SectionPolle
         logger.warn('discarded invalid ballot box report', { section: key, reason: report.reason });
         return;
       }
-      store.set({ section, hash: aux.hash, report: report.report });
+      const result = { section, hash: aux.hash, report: report.report };
+      store.set(result);
       reconciled.set(key, section.publishedAt as string);
-      dirtyZones.set(zoneKey(section), {
-        state: section.state,
-        municipalityCode: section.municipalityCode,
-        zone: section.zone,
-      });
+      unsaved.set(key, result);
       stats.fetched++;
     } catch (error) {
       if (signal?.aborted) return;
@@ -183,6 +190,7 @@ export function createSectionPoller(options: SectionPollerOptions): SectionPolle
 
       await forEachWithConcurrency(due, options.concurrency, (s) => fetchSection(s, stats, deadline, signal), signal);
       // Also on abort: a redeploy's SIGTERM must not lose what this job downloaded.
+      // Restored sections never land in `unsaved`, so they are not written back.
       await persist(stats);
       stats.stored = store.size;
       return stats;

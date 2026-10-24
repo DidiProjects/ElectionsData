@@ -1,6 +1,21 @@
 import type { Clock } from '../src/clock.js';
-import type { Section } from '../src/domain/types.js';
+import type { Section, SectionResult } from '../src/domain/types.js';
+import type { CandidateSink, SectionRepository } from '../src/results/sectionRepository.js';
 import type { RawSectionList } from '../src/urna/rawTypes.js';
+
+/** In-memory stand-in for the Postgres repository; survives across app instances like a database. */
+export function memoryRepository(): SectionRepository & CandidateSink & { sections: Map<string, SectionResult> } {
+  const sections = new Map<string, SectionResult>();
+  const key = (r: SectionResult) => `${r.section.state}-${r.section.municipalityCode}-${r.section.zone}-${r.section.section}`;
+  return {
+    sections,
+    loadAll: async () => [...sections.values()].map((r) => structuredClone(r)),
+    save: async (results) => {
+      for (const r of results) sections.set(key(r), structuredClone(r));
+    },
+    saveCandidates: async () => undefined,
+  };
+}
 
 interface PendingSleep {
   at: number;

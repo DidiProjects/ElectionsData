@@ -1,11 +1,8 @@
 import type { Logger } from '../logger.js';
+import type { CandidateKey, CandidateSink } from '../results/sectionRepository.js';
 import type { UrnaClient } from '../urna/urnaClient.js';
 
-export interface CandidateKey {
-  electionId: number;
-  officeCode: number;
-  state: string;
-}
+export type { CandidateKey } from '../results/sectionRepository.js';
 
 export interface CandidateDirectory {
   /** Loads names for keys not cached yet; a failed key stays unloaded and is retried next call. */
@@ -15,20 +12,21 @@ export interface CandidateDirectory {
 
 const keyOf = (electionId: number, officeCode: number, state: string): string => `${electionId}|${officeCode}|${state}`;
 
-export function createCandidateDirectory(client: UrnaClient, logger: Logger): CandidateDirectory {
+export function createCandidateDirectory(client: UrnaClient, sink: CandidateSink, logger: Logger): CandidateDirectory {
   const cache = new Map<string, Map<number, string>>();
   return {
     async load(keys) {
-      for (const { electionId, officeCode, state } of keys) {
-        const key = keyOf(electionId, officeCode, state);
-        if (cache.has(key)) continue;
+      for (const key of keys) {
+        const cacheKey = keyOf(key.electionId, key.officeCode, key.state);
+        if (cache.has(cacheKey)) continue;
         try {
-          cache.set(key, await client.getCandidateNames(electionId, state, officeCode));
+          const names = await client.getCandidateNames(key.electionId, key.state, key.officeCode);
+          // Persisted so the database view can name votes; cached only once stored.
+          await sink.saveCandidates(key, names);
+          cache.set(cacheKey, names);
         } catch (error) {
           logger.warn('candidate names unavailable, leaving them blank for now', {
-            electionId,
-            officeCode,
-            state,
+            ...key,
             error: (error as Error).message,
           });
         }

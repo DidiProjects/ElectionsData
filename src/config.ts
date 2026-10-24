@@ -1,4 +1,11 @@
+/**
+ * job: scheduled window of periodic jobs (the long-running worker).
+ * backfill: one-off load — runs jobs back to back until every published BU is stored, then exits.
+ */
+export type RunMode = 'job' | 'backfill';
+
 export interface AppConfig {
+  mode: RunMode;
   baseUrl: string;
   cycle: string;
   /** "Pleito" groups every election held on the same day (e.g. 3221 = 2026 2nd round). */
@@ -7,8 +14,8 @@ export interface AppConfig {
   /** Lowercase UF codes; "zz" is abroad. */
   states: string[];
   outputDir: string;
-  /** Decoded BUs persisted here survive restarts and redeploys. */
-  stateDir: string;
+  /** Postgres holding the decoded BUs, so they survive restarts and redeploys. */
+  databaseUrl: string;
   outputPrefix: string;
   maxVersions: number;
   pollIntervalMs: number;
@@ -107,6 +114,9 @@ export function loadConfig(env: Env): AppConfig {
     if (!ALL_STATES.includes(state)) problems.push(`STATES contains invalid UF "${state}"`);
   }
 
+  const mode = (env.MODE?.trim().toLowerCase() || 'job') as RunMode;
+  if (mode !== 'job' && mode !== 'backfill') problems.push(`MODE must be "job" or "backfill", got "${env.MODE}"`);
+
   const outputPrefix = env.OUTPUT_PREFIX?.trim() || 'secoes';
   if (!/^[A-Za-z0-9_-]+$/.test(outputPrefix)) {
     problems.push(`OUTPUT_PREFIX may only contain letters, digits, "_" and "-", got "${outputPrefix}"`);
@@ -116,13 +126,14 @@ export function loadConfig(env: Env): AppConfig {
   if (cycle && !/^ele\d{4}$/.test(cycle)) problems.push(`ELECTION_CYCLE must look like "ele2026", got "${cycle}"`);
 
   const config: AppConfig = {
+    mode,
     baseUrl: (env.TSE_BASE_URL?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, ''),
     cycle,
     pleitoCode: positiveInt('PLEITO_CODE'),
     officeCodes,
     states: states.length > 0 ? states : [...ALL_STATES],
     outputDir: required('OUTPUT_DIR'),
-    stateDir: required('STATE_DIR'),
+    databaseUrl: required('DATABASE_URL'),
     outputPrefix,
     maxVersions: positiveInt('MAX_CSV_VERSIONS', 1000),
     pollIntervalMs: positiveInt('POLL_INTERVAL_SECONDS') * 1000,

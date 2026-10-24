@@ -5,40 +5,22 @@ export interface SectionStore {
   get(section: Section): SectionResult | undefined;
   /** Every stored section, ordered by state, municipality, zone and section. */
   all(): SectionResult[];
-  inZone(state: string, municipalityCode: string, zone: string): SectionResult[];
   readonly size: number;
 }
 
 export const sectionKey = (s: Section): string => `${s.state}-${s.municipalityCode}-${s.zone}-${s.section}`;
 
-const zoneOf = (s: { state: string; municipalityCode: string; zone: string }): string =>
-  `${s.state}-${s.municipalityCode}-${s.zone}`;
-
-// Map keys are unique, so the comparator never sees two equal keys.
-const byKey = <T>([a]: [string, T], [b]: [string, T]): number => (a < b ? -1 : 1);
-
 export function createSectionStore(): SectionStore {
-  // Indexed by zone: persistence rewrites one zone at a time.
-  const zones = new Map<string, Map<string, SectionResult>>();
-  let size = 0;
-
+  const entries = new Map<string, SectionResult>();
   return {
     set: (result) => {
-      const zone = zoneOf(result.section);
-      const sections = zones.get(zone) ?? new Map<string, SectionResult>();
-      const key = sectionKey(result.section);
-      if (!sections.has(key)) size++;
-      sections.set(key, result);
-      zones.set(zone, sections);
+      entries.set(sectionKey(result.section), result);
     },
-    get: (section) => zones.get(zoneOf(section))?.get(sectionKey(section)),
-    all: () =>
-      [...zones.entries()]
-        .sort(byKey)
-        .flatMap(([, sections]) => [...sections.entries()].sort(byKey).map(([, r]) => r)),
-    inZone: (state, municipalityCode, zone) => [...(zones.get(zoneOf({ state, municipalityCode, zone }))?.values() ?? [])],
+    get: (section) => entries.get(sectionKey(section)),
+    // Map keys are unique, so the comparator never sees two equal keys.
+    all: () => [...entries.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([, r]) => r),
     get size() {
-      return size;
+      return entries.size;
     },
   };
 }

@@ -24,15 +24,6 @@ describe('createSectionStore', () => {
     expect(store.get(section({ section: '0099' }))).toBeUndefined();
   });
 
-  it('lists the results of one zone', () => {
-    const store = createSectionStore();
-    store.set(result({ section: '0001' }));
-    store.set(result({ section: '0002' }));
-    store.set(result({ zone: '0005' }));
-    expect(store.inZone('ac', '01066', '0004').map((r) => r.section.section).sort()).toEqual(['0001', '0002']);
-    expect(store.inZone('ac', '01066', '0009')).toEqual([]);
-  });
-
   it('lists results ordered by state, municipality, zone and section', () => {
     const store = createSectionStore();
     store.set(result({ state: 'sp' }));

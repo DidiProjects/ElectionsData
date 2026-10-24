@@ -26,7 +26,7 @@ function fakeClient() {
 function fakeRepository() {
   return {
     loadAll: vi.fn<SectionRepository['loadAll']>(async () => []),
-    saveZone: vi.fn<SectionRepository['saveZone']>(async () => undefined),
+    save: vi.fn<SectionRepository['save']>(async () => undefined),
   };
 }
 
@@ -163,40 +163,43 @@ describe('createSectionPoller', () => {
       expect(await build().pollOnce()).toMatchObject({ restored: 1, due: 2 });
     });
 
-    it('downloads everything when the state volume cannot be read, and tries to restore again', async () => {
-      repository.loadAll.mockRejectedValueOnce(new Error('EACCES'));
+    it('downloads everything when the database cannot be read, and tries to restore again', async () => {
+      repository.loadAll.mockRejectedValueOnce(new Error('ECONNREFUSED'));
       const poller = build();
       expect(await poller.pollOnce()).toMatchObject({ restored: 0, due: 2, fetched: 2 });
       await poller.pollOnce();
       expect(repository.loadAll).toHaveBeenCalledTimes(2);
     });
 
-    it('writes each changed zone once at the end of the job', async () => {
-      const other = section({ zone: '0005', section: '0001' });
-      client.getSectionList.mockResolvedValueOnce({ kind: 'updated', etag: null, sections: [A, B, other] });
-      expect((await build().pollOnce()).persistedZones).toBe(2);
-      const saved = repository.saveZone.mock.calls.map(([zone, results]) => [zone.zone, results.map((r) => r.section.section).sort()]);
-      expect(saved.sort()).toEqual([
-        ['0004', ['0001', '0002']],
-        ['0005', ['0001']],
-      ]);
+    it('writes only the sections fetched in this job, once, at the end', async () => {
+      repository.loadAll.mockResolvedValueOnce([restoredA]);
+      expect((await build().pollOnce()).persisted).toBe(1);
+      expect(repository.save).toHaveBeenCalledTimes(1);
+      expect(repository.save.mock.calls[0]?.[0].map((r) => r.section.section)).toEqual(['0002']);
+    });
+
+    it('splits a large job into batches of 500 sections', async () => {
+      const sections = Array.from({ length: 1200 }, (_, i) => section({ section: String(i).padStart(4, '0') }));
+      client.getSectionList.mockResolvedValueOnce({ kind: 'updated', etag: null, sections });
+      expect((await build().pollOnce()).persisted).toBe(1200);
+      expect(repository.save.mock.calls.map(([batch]) => batch.length)).toEqual([500, 500, 200]);
     });
 
     it('writes nothing when no section changed', async () => {
       const poller = build();
       await poller.pollOnce();
-      repository.saveZone.mockClear();
+      repository.save.mockClear();
       client.getSectionList.mockResolvedValueOnce({ kind: 'not_modified' });
-      expect((await poller.pollOnce()).persistedZones).toBe(0);
-      expect(repository.saveZone).not.toHaveBeenCalled();
+      expect((await poller.pollOnce()).persisted).toBe(0);
+      expect(repository.save).not.toHaveBeenCalled();
     });
 
-    it('keeps a zone that failed to persist and retries it next job', async () => {
-      repository.saveZone.mockRejectedValueOnce(new Error('disk full'));
+    it('keeps sections that failed to persist and retries them next job', async () => {
+      repository.save.mockRejectedValueOnce(new Error('connection lost'));
       const poller = build();
-      expect((await poller.pollOnce()).persistedZones).toBe(0);
+      expect((await poller.pollOnce()).persisted).toBe(0);
       client.getSectionList.mockResolvedValueOnce({ kind: 'not_modified' });
-      expect((await poller.pollOnce()).persistedZones).toBe(1);
+      expect((await poller.pollOnce()).persisted).toBe(2);
     });
 
     it('persists what was downloaded even when the job is aborted', async () => {
@@ -206,7 +209,7 @@ describe('createSectionPoller', () => {
         throw new Error('aborted');
       });
       const p = createSectionPoller({ client, store, repository, clock, logger: silentLogger, states: ['ac'], concurrency: 1, jobBudgetMs: 60_000 });
-      expect(await p.pollOnce(controller.signal)).toMatchObject({ fetched: 1, persistedZones: 1 });
+      expect(await p.pollOnce(controller.signal)).toMatchObject({ fetched: 1, persisted: 1 });
     });
   });
 });
