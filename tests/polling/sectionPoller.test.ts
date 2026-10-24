@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Section } from '../../src/domain/types.js';
 import { silentLogger } from '../../src/logger.js';
 import { createSectionPoller } from '../../src/polling/sectionPoller.js';
+import type { SectionRepository } from '../../src/results/sectionRepository.js';
 import { createSectionStore, type SectionStore } from '../../src/results/sectionStore.js';
 import type { BallotBoxReport } from '../../src/urna/bu.js';
 import type { UrnaClient } from '../../src/urna/urnaClient.js';
@@ -22,15 +23,24 @@ function fakeClient() {
   };
 }
 
+function fakeRepository() {
+  return {
+    loadAll: vi.fn<SectionRepository['loadAll']>(async () => []),
+    saveZone: vi.fn<SectionRepository['saveZone']>(async () => undefined),
+  };
+}
+
 describe('createSectionPoller', () => {
   let client: ReturnType<typeof fakeClient>;
+  let repository: ReturnType<typeof fakeRepository>;
   let store: SectionStore;
   let clock: FakeClock;
   const build = (jobBudgetMs = 60_000, states = ['ac']) =>
-    createSectionPoller({ client, store, clock, logger: silentLogger, states, concurrency: 2, jobBudgetMs });
+    createSectionPoller({ client, store, repository, clock, logger: silentLogger, states, concurrency: 2, jobBudgetMs });
 
   beforeEach(() => {
     client = fakeClient();
+    repository = fakeRepository();
     store = createSectionStore();
     clock = new FakeClock();
   });
@@ -103,7 +113,7 @@ describe('createSectionPoller', () => {
     });
     const sections: Section[] = Array.from({ length: 6 }, (_, i) => section({ section: String(i).padStart(4, '0') }));
     client.getSectionList.mockResolvedValue({ kind: 'updated', etag: null, sections });
-    const poller = createSectionPoller({ client, store, clock, logger: silentLogger, states: ['ac'], concurrency: 1, jobBudgetMs: 60_000 });
+    const poller = createSectionPoller({ client, store, repository, clock, logger: silentLogger, states: ['ac'], concurrency: 1, jobBudgetMs: 60_000 });
     const stats = await poller.pollOnce();
     expect(stats).toMatchObject({ due: 6, fetched: 2, deferred: 4 });
     clock.advance(1);
@@ -134,5 +144,69 @@ describe('createSectionPoller', () => {
   it('reads one list per configured state', async () => {
     await build(60_000, ['ac', 'al']).pollOnce();
     expect(client.getSectionList.mock.calls.map((c) => c[0])).toEqual(['ac', 'al']);
+  });
+
+  describe('persistence', () => {
+    const restoredA = { section: A, hash: 'h-0001', report };
+
+    it('restores stored sections on the first job and does not download them again', async () => {
+      repository.loadAll.mockResolvedValueOnce([restoredA]);
+      const poller = build();
+      expect(await poller.pollOnce()).toMatchObject({ restored: 1, due: 1, fetched: 1, stored: 2 });
+      expect(client.getAux.mock.calls.map((c) => c[0].section)).toEqual(['0002']);
+      await poller.pollOnce();
+      expect(repository.loadAll).toHaveBeenCalledTimes(1);
+    });
+
+    it('downloads a restored section again when the TSE republished it', async () => {
+      repository.loadAll.mockResolvedValueOnce([{ ...restoredA, section: { ...A, publishedAt: '25/10/2026 20:00:00' } }]);
+      expect(await build().pollOnce()).toMatchObject({ restored: 1, due: 2 });
+    });
+
+    it('downloads everything when the state volume cannot be read, and tries to restore again', async () => {
+      repository.loadAll.mockRejectedValueOnce(new Error('EACCES'));
+      const poller = build();
+      expect(await poller.pollOnce()).toMatchObject({ restored: 0, due: 2, fetched: 2 });
+      await poller.pollOnce();
+      expect(repository.loadAll).toHaveBeenCalledTimes(2);
+    });
+
+    it('writes each changed zone once at the end of the job', async () => {
+      const other = section({ zone: '0005', section: '0001' });
+      client.getSectionList.mockResolvedValueOnce({ kind: 'updated', etag: null, sections: [A, B, other] });
+      expect((await build().pollOnce()).persistedZones).toBe(2);
+      const saved = repository.saveZone.mock.calls.map(([zone, results]) => [zone.zone, results.map((r) => r.section.section).sort()]);
+      expect(saved.sort()).toEqual([
+        ['0004', ['0001', '0002']],
+        ['0005', ['0001']],
+      ]);
+    });
+
+    it('writes nothing when no section changed', async () => {
+      const poller = build();
+      await poller.pollOnce();
+      repository.saveZone.mockClear();
+      client.getSectionList.mockResolvedValueOnce({ kind: 'not_modified' });
+      expect((await poller.pollOnce()).persistedZones).toBe(0);
+      expect(repository.saveZone).not.toHaveBeenCalled();
+    });
+
+    it('keeps a zone that failed to persist and retries it next job', async () => {
+      repository.saveZone.mockRejectedValueOnce(new Error('disk full'));
+      const poller = build();
+      expect((await poller.pollOnce()).persistedZones).toBe(0);
+      client.getSectionList.mockResolvedValueOnce({ kind: 'not_modified' });
+      expect((await poller.pollOnce()).persistedZones).toBe(1);
+    });
+
+    it('persists what was downloaded even when the job is aborted', async () => {
+      const controller = new AbortController();
+      client.getReport.mockImplementationOnce(async () => ({ kind: 'ok', report })).mockImplementationOnce(async () => {
+        controller.abort();
+        throw new Error('aborted');
+      });
+      const p = createSectionPoller({ client, store, repository, clock, logger: silentLogger, states: ['ac'], concurrency: 1, jobBudgetMs: 60_000 });
+      expect(await p.pollOnce(controller.signal)).toMatchObject({ fetched: 1, persistedZones: 1 });
+    });
   });
 });

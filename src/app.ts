@@ -7,6 +7,7 @@ import { createCooldownGate } from './http/cooldownGate.js';
 import { createHttpClient, type FetchFn } from './http/httpClient.js';
 import type { Logger } from './logger.js';
 import { createSectionPoller } from './polling/sectionPoller.js';
+import { createSectionRepository } from './results/sectionRepository.js';
 import { createSectionStore } from './results/sectionStore.js';
 import { runWindow, type WindowOutcome } from './scheduler/scheduler.js';
 import { createUrnaClient } from './urna/urnaClient.js';
@@ -43,6 +44,7 @@ export function createApp(config: AppConfig, deps: AppDependencies): App {
   const poller = createSectionPoller({
     client,
     store,
+    repository: createSectionRepository({ stateDir: config.stateDir, pleitoCode: config.pleitoCode, logger }),
     logger,
     clock,
     states: config.states,

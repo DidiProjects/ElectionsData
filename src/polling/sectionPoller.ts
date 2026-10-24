@@ -1,6 +1,7 @@
 import type { Clock } from '../clock.js';
 import type { Section } from '../domain/types.js';
 import type { Logger } from '../logger.js';
+import { zoneKey, type SectionRepository, type ZoneRef } from '../results/sectionRepository.js';
 import { sectionKey, type SectionStore } from '../results/sectionStore.js';
 import type { UrnaClient } from '../urna/urnaClient.js';
 import { forEachWithConcurrency } from './concurrency.js';
@@ -20,6 +21,9 @@ export interface SectionPollStats {
   /** Due sections left for the next job because this one ran out of time. */
   deferred: number;
   stored: number;
+  /** Sections loaded from the state volume on the first job after a start. */
+  restored: number;
+  persistedZones: number;
 }
 
 export interface SectionPoller {
@@ -29,6 +33,7 @@ export interface SectionPoller {
 export interface SectionPollerOptions {
   client: UrnaClient;
   store: SectionStore;
+  repository: SectionRepository;
   logger: Logger;
   clock: Clock;
   states: string[];
@@ -49,6 +54,8 @@ const emptyStats = (): SectionPollStats => ({
   failed: 0,
   deferred: 0,
   stored: 0,
+  restored: 0,
+  persistedZones: 0,
 });
 
 /**
@@ -57,10 +64,40 @@ const emptyStats = (): SectionPollStats => ({
  * is downloaded once unless the TSE republishes it.
  */
 export function createSectionPoller(options: SectionPollerOptions): SectionPoller {
-  const { client, store, logger, clock } = options;
+  const { client, store, repository, logger, clock } = options;
   const lists = new Map<string, { etag: string | null; sections: Section[] }>();
   /** Publication stamp each section was last successfully fetched for. */
   const reconciled = new Map<string, string>();
+  /** Zones with sections not yet written to the state volume (kept across jobs on failure). */
+  const dirtyZones = new Map<string, ZoneRef>();
+  let restored = false;
+
+  const restore = async (stats: SectionPollStats): Promise<void> => {
+    try {
+      const results = await repository.loadAll();
+      for (const result of results) {
+        store.set(result);
+        reconciled.set(sectionKey(result.section), result.section.publishedAt as string);
+      }
+      stats.restored = results.length;
+      restored = true;
+      if (results.length > 0) logger.info('restored sections from the state volume', { sections: results.length });
+    } catch (error) {
+      logger.error('state volume unreadable, downloading as if empty', { error: (error as Error).message });
+    }
+  };
+
+  const persist = async (stats: SectionPollStats): Promise<void> => {
+    for (const [key, zone] of dirtyZones) {
+      try {
+        await repository.saveZone(zone, store.inZone(zone.state, zone.municipalityCode, zone.zone));
+        dirtyZones.delete(key);
+        stats.persistedZones++;
+      } catch (error) {
+        logger.error('could not persist zone, will retry next job', { zone: key, error: (error as Error).message });
+      }
+    }
+  };
 
   const refreshList = async (state: string, stats: SectionPollStats, signal?: AbortSignal): Promise<void> => {
     stats.statesChecked++;
@@ -113,6 +150,11 @@ export function createSectionPoller(options: SectionPollerOptions): SectionPolle
       }
       store.set({ section, hash: aux.hash, report: report.report });
       reconciled.set(key, section.publishedAt as string);
+      dirtyZones.set(zoneKey(section), {
+        state: section.state,
+        municipalityCode: section.municipalityCode,
+        zone: section.zone,
+      });
       stats.fetched++;
     } catch (error) {
       if (signal?.aborted) return;
@@ -124,6 +166,7 @@ export function createSectionPoller(options: SectionPollerOptions): SectionPolle
   return {
     async pollOnce(signal) {
       const stats = emptyStats();
+      if (!restored) await restore(stats);
       const deadline = clock.now().getTime() + options.jobBudgetMs;
 
       await forEachWithConcurrency(options.states, options.concurrency, (state) => refreshList(state, stats, signal), signal);
@@ -139,6 +182,8 @@ export function createSectionPoller(options: SectionPollerOptions): SectionPolle
       stats.due = due.length;
 
       await forEachWithConcurrency(due, options.concurrency, (s) => fetchSection(s, stats, deadline, signal), signal);
+      // Also on abort: a redeploy's SIGTERM must not lose what this job downloaded.
+      await persist(stats);
       stats.stored = store.size;
       return stats;
     },

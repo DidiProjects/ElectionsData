@@ -81,15 +81,16 @@ jobs:
         run: |
           REPO_LOWER="${{ steps.repo.outputs.name }}"
           OUTPUT_HOST_DIR="${{ vars.OUTPUT_HOST_DIR || '/srv/elections-data/output' }}"
+          STATE_HOST_DIR="${{ vars.STATE_HOST_DIR || '/srv/elections-data/state' }}"
           ssh -o StrictHostKeyChecking=no -p 1024 diego@${{ vars.TAILSCALE_IP }} << EOF
 
           echo "${{ secrets.GITHUB_TOKEN }}" | sudo docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
           sudo docker pull ghcr.io/${REPO_LOWER}:latest
 
-          # The container runs as the image's "node" user (uid 1000) and must own the CSV folder.
-          sudo mkdir -p "${OUTPUT_HOST_DIR}"
-          sudo chown 1000:1000 "${OUTPUT_HOST_DIR}"
+          # The container runs as the image's "node" user (uid 1000) and must own both folders.
+          sudo mkdir -p "${OUTPUT_HOST_DIR}" "${STATE_HOST_DIR}"
+          sudo chown 1000:1000 "${OUTPUT_HOST_DIR}" "${STATE_HOST_DIR}"
 
           sudo docker stop elections-data-worker || true
           sudo docker rm elections-data-worker || true
@@ -101,7 +102,9 @@ jobs:
             --restart=unless-stopped \
             --log-opt max-size=10m --log-opt max-file=3 \
             -v "${OUTPUT_HOST_DIR}:/data/output" \
+            -v "${STATE_HOST_DIR}:/data/state" \
             -e OUTPUT_DIR=/data/output \
+            -e STATE_DIR=/data/state \
             -e ELECTION_CYCLE="${{ vars.ELECTION_CYCLE }}" \
             -e PLEITO_CODE="${{ vars.PLEITO_CODE }}" \
             -e OFFICE_CODES="${{ vars.OFFICE_CODES }}" \

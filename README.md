@@ -46,6 +46,8 @@ O decodificador de BU foi conferido contra o resultado oficial do 1º turno. A s
 
 **Vazão:** a primeira requisição de cada BU é um cache miss no CDN e leva cerca de 0,5 s, contra cerca de 50 ms nas seguintes. Isso dá, na prática, cerca de `CONCURRENCY` seções por segundo. Com 8, o worker processa cerca de 500 seções por minuto, e o Brasil inteiro (cerca de 470 mil seções) levaria cerca de 15 h.
 
+**Persistência:** os BUs decodificados ficam gravados em `STATE_DIR`, um volume separado dos CSVs. São arquivos JSON, um por zona eleitoral, separados por pleito (`p3221/{uf}/{município}-{zona}.json`). O primeiro job depois de um start ou redeploy restaura tudo do volume, e os jobs seguintes só gravam as zonas que mudaram. Num `docker stop`, o job em andamento grava o que já baixou antes de sair. Um arquivo ilegível é ignorado e suas seções são baixadas de novo.
+
 **Orçamento por job:** um job para de iniciar novas seções quando seu período (`POLL_INTERVAL_SECONDS`) se esgota, exporta e deixa o resto para o próximo. Um lote grande, como o de SP, não segura o export por uma hora.
 
 ## CSV
@@ -103,6 +105,7 @@ Depois que a janela fecha, o processo continua de pé, sem fazer nada. Se ele sa
 | `OFFICE_CODES` | sim | — | Cargos exportados, ex. `1` ou `1,3` |
 | `STATES` | não | todas + `zz` | UFs separadas por vírgula |
 | `OUTPUT_DIR` | sim | `/data/output` na imagem | Pasta dos CSVs |
+| `STATE_DIR` | sim | `/data/state` na imagem | BUs já baixados, preservados entre restarts |
 | `OUTPUT_PREFIX` | não | `secoes` | Prefixo dos arquivos, ex. `secoes_2t2026` |
 | `MAX_CSV_VERSIONS` | não | `1000` | Versões numeradas mantidas (o `_current` não conta) |
 | `POLL_INTERVAL_SECONDS` | sim | — | Período e orçamento de tempo do job (≥ 30) |
@@ -147,7 +150,7 @@ Configuração no GitHub:
 
 - **Secrets:** `TAILSCALE_CLIENT_SECRET` e `SSH_PRIVATE_KEY`.
 - **Variables:** `TAILSCALE_IP`, `ELECTION_CYCLE`, `PLEITO_CODE` e `OFFICE_CODES`.
-- **Variables opcionais:** `STATES`, `SCHEDULE_START`, `SCHEDULE_END`, `OUTPUT_HOST_DIR` (padrão `/srv/elections-data/output`), `OUTPUT_PREFIX`, `MAX_CSV_VERSIONS`, `POLL_INTERVAL_SECONDS`, `MAX_RETRIES`, `CONCURRENCY` e `LOG_LEVEL`.
+- **Variables opcionais:** `STATES`, `SCHEDULE_START`, `SCHEDULE_END`, `OUTPUT_HOST_DIR` (padrão `/srv/elections-data/output`), `STATE_HOST_DIR` (padrão `/srv/elections-data/state`), `OUTPUT_PREFIX`, `MAX_CSV_VERSIONS`, `POLL_INTERVAL_SECONDS`, `MAX_RETRIES`, `CONCURRENCY` e `LOG_LEVEL`.
 
 ## Estrutura
 
@@ -161,7 +164,7 @@ src/
   http/                  cliente HTTP (JSON e binário) com retry, timeout, ETag e pausa compartilhada
   urna/                  URLs, tipos, validação, leitor BER e decodificador do BU
   polling/               job de coleta guiado pela lista de seções
-  results/               BUs coletados por seção
+  results/               BUs coletados por seção, em memória e no volume de estado
   export/                CSV longo, nomes de candidatos e versionamento _N / _current
   scheduler/             janela de execução e rotina periódica
 tests/                   testes unitários (Vitest), espelhando src/

@@ -5,8 +5,10 @@ services:
     env_file: .env
     environment:
       - OUTPUT_DIR=/data/output
+      - STATE_DIR=/data/state
     volumes:
       - ${OUTPUT_HOST_DIR:-./output}:/data/output
+      - ${STATE_HOST_DIR:-./state}:/data/state
     restart: unless-stopped
     logging:
       driver: json-file

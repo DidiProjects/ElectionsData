@@ -22,11 +22,16 @@ const ARCHIVE = `${BASE}/arquivo-urna/3221`;
 
 describe('createApp', () => {
   let dir: string;
+  let stateRoot: string;
 
   beforeEach(async () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), 'app-'));
+    stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'app-state-'));
   });
-  afterEach(() => fs.rm(dir, { recursive: true, force: true }));
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(stateRoot, { recursive: true, force: true });
+  });
 
   it('fetches each published BU once and writes a numbered version plus current per job', async () => {
     const clock = new FakeClock('2026-10-26T00:00:00Z');
@@ -83,6 +88,7 @@ describe('createApp', () => {
       OFFICE_CODES: '1',
       STATES: 'ac',
       OUTPUT_DIR: dir,
+      STATE_DIR: path.join(stateRoot, 'state'),
       OUTPUT_PREFIX: 'secoes_2t2026',
       POLL_INTERVAL_SECONDS: '30',
       SCHEDULE_END: '2026-10-26T00:01:15Z',
@@ -116,5 +122,54 @@ describe('createApp', () => {
       '2026-10-25 21:01:00,AC,01066,CIDADE 01066,4,1,9,6258,1,Presidente,nominal,13,CANDIDATO TREZE,120,300,200,' +
         '2026-10-25 21:00:00,2026-10-25 08:00:00,2026-10-25 17:00:00,2026-10-25 17:02:00',
     );
+  });
+
+  it('restores downloaded BUs after a restart instead of fetching them again', async () => {
+    const urls: string[] = [];
+    const fetch = vi.fn<FetchFn>(async (url) => {
+      urls.push(url);
+      if (url.endsWith('-cs.json')) {
+        return jsonResponse(rawSectionList([{ ns: '0001', published: '25/10/2026 21:00:00' }, { ns: '0002', published: '25/10/2026 21:00:00' }]));
+      }
+      const aux = /\/(\d{4})\/p003221-ac-m01066-z0004-s\d{4}-aux\.json$/.exec(url);
+      if (aux) return jsonResponse(rawAux([{ hash: `h${aux[1]}`, files: [{ nm: `s${aux[1]}-bu.dat`, tp: 'bu' }] }]));
+      const bu = /\/(\d{4})\/h\d{4}\/s\d{4}-bu\.dat$/.exec(url);
+      if (bu) {
+        return bytesResponse(
+          buildBallotBoxReport({
+            municipality: 1066,
+            zone: 4,
+            section: Number(bu[1]),
+            offices: [{ electionId: 6258, officeCode: 1, eligible: 10, turnout: 9, votes: [{ type: 1, votes: 9, number: 13 }] }],
+          }),
+        );
+      }
+      if (url.endsWith('-u.json')) return jsonResponse(rawCandidates([{ n: '13', nmu: 'TREZE' }]));
+      return emptyResponse(404);
+    });
+    const config = (end: string) =>
+      loadConfig({
+        TSE_BASE_URL: 'https://tse.example/oficial',
+        ELECTION_CYCLE: 'ele2026',
+        PLEITO_CODE: '3221',
+        OFFICE_CODES: '1',
+        STATES: 'ac',
+        OUTPUT_DIR: dir,
+        STATE_DIR: path.join(stateRoot, 'state'),
+        OUTPUT_PREFIX: 'secoes_2t2026',
+        POLL_INTERVAL_SECONDS: '30',
+        SCHEDULE_END: end,
+      });
+
+    await createApp(config('2026-10-26T00:00:15Z'), { fetch, clock: new FakeClock('2026-10-26T00:00:00Z'), logger: silentLogger }).run();
+    expect(urls.filter((u) => u.endsWith('-bu.dat'))).toHaveLength(2);
+
+    urls.length = 0;
+    await createApp(config('2026-10-26T00:10:15Z'), { fetch, clock: new FakeClock('2026-10-26T00:10:00Z'), logger: silentLogger }).run();
+    expect(urls.filter((u) => u.endsWith('-bu.dat') || u.endsWith('-aux.json'))).toEqual([]);
+
+    const current = await fs.readFile(path.join(dir, 'secoes_2t2026_current.csv'), 'utf8');
+    expect(current.trimEnd().split('\n').slice(1)).toHaveLength(2);
+    expect((await fs.readdir(dir)).sort()).toEqual(['secoes_2t2026_0.csv', 'secoes_2t2026_1.csv', 'secoes_2t2026_current.csv']);
   });
 });

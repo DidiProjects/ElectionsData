@@ -7,6 +7,8 @@ export interface AppConfig {
   /** Lowercase UF codes; "zz" is abroad. */
   states: string[];
   outputDir: string;
+  /** Decoded BUs persisted here survive restarts and redeploys. */
+  stateDir: string;
   outputPrefix: string;
   maxVersions: number;
   pollIntervalMs: number;
@@ -120,6 +122,7 @@ export function loadConfig(env: Env): AppConfig {
     officeCodes,
     states: states.length > 0 ? states : [...ALL_STATES],
     outputDir: required('OUTPUT_DIR'),
+    stateDir: required('STATE_DIR'),
     outputPrefix,
     maxVersions: positiveInt('MAX_CSV_VERSIONS', 1000),
     pollIntervalMs: positiveInt('POLL_INTERVAL_SECONDS') * 1000,

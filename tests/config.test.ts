@@ -6,6 +6,7 @@ const base: Env = {
   PLEITO_CODE: '3221',
   OFFICE_CODES: '1, 3',
   OUTPUT_DIR: '/data/output',
+  STATE_DIR: '/data/state',
   POLL_INTERVAL_SECONDS: '60',
 };
 
@@ -29,6 +30,7 @@ describe('loadConfig', () => {
       officeCodes: [1, 3],
       states: ALL_STATES,
       outputDir: '/data/output',
+      stateDir: '/data/state',
       outputPrefix: 'secoes',
       maxVersions: 1000,
       pollIntervalMs: 60_000,
@@ -74,6 +76,7 @@ describe('loadConfig', () => {
         'ELECTION_CYCLE is required',
         'PLEITO_CODE is required',
         'OUTPUT_DIR is required',
+        'STATE_DIR is required',
         'POLL_INTERVAL_SECONDS is required',
       ]),
     );
