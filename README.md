@@ -38,13 +38,18 @@ O decodificador de BU foi conferido contra o resultado oficial do 1º turno. A s
 
 1. **Lista de seções antes do BU.** A cada job, o worker baixa a lista de seções de cada UF (28 com o exterior) e busca aux e BU só das seções que ganharam horário de publicação novo. Um BU é definitivo, então cada seção é baixada **uma única vez**, ou de novo só se o TSE republicar.
 2. **Requisição condicional.** As listas de seções são pedidas com `If-None-Match`. Se nada mudou, o CDN responde `304` sem corpo.
-3. **Concorrência limitada.** `CONCURRENCY` (padrão 8) é o número máximo de requisições simultâneas.
+3. **Concorrência limitada.** `CONCURRENCY` (padrão 64) é o número máximo de requisições simultâneas.
 4. **Retentativas.** Até `MAX_RETRIES` (padrão 3) retentativas para erro de rede, timeout, 408/425/429/5xx e corpo truncado. O intervalo cresce exponencialmente, com *full jitter*, até o máximo de 30 s. 404 e os demais 4xx não são retentados.
 5. **Throttling compartilhado.** Um `429` ou `503` respeita o `Retry-After` e pausa **todos** os workers.
 6. **Intervalo mínimo de 30 s** entre jobs. O CDN guarda as listas em cache por 60 s.
 7. **User-Agent identificado.** As requisições se identificam com o nome do worker e o link do repositório.
 
-**Vazão:** a primeira requisição de cada BU é um cache miss no CDN e leva cerca de 0,5 s, contra cerca de 50 ms nas seguintes. Isso dá, na prática, cerca de `CONCURRENCY` seções por segundo. Com 8, o worker processa cerca de 500 seções por minuto, e o Brasil inteiro (cerca de 470 mil seções) levaria cerca de 15 h.
+**Vazão:** a primeira requisição de cada BU é um cache miss no CDN e leva cerca de 0,5 s, contra cerca de 50 ms nas seguintes. Isso dá, na prática, cerca de `CONCURRENCY` seções por segundo:
+
+| `CONCURRENCY` | Medido no 1º turno | Brasil inteiro (cerca de 470 mil seções) |
+|---|---|---|
+| 8 | 500 a 860 seções por minuto (AC) | cerca de 9 a 15 h |
+| 64 | cerca de 4.000 seções por minuto (PB, 10.712 seções em 3 min 23 s), 0 retentativas e 0 throttling | cerca de 2 h |
 
 **Persistência:** os BUs decodificados ficam no Postgres (ver [Banco de dados](#banco-de-dados)). O primeiro job depois de um start ou redeploy restaura tudo do banco e só baixa o que falta. Ao fim de cada job, as seções novas são gravadas em lotes de 500, cada lote numa transação. Num `docker stop`, o job em andamento grava o que já baixou antes de sair. Se o banco estiver fora do ar, o worker continua coletando e tenta gravar e restaurar de novo no job seguinte.
 
@@ -128,7 +133,7 @@ sudo docker run --rm --network elections-network \
   -v /srv/elections-data/output:/data/output ghcr.io/didiprojects/electionsdata:latest
 ```
 
-Serve para carregar um pleito já publicado (o 1º turno), alcançar um lote grande no domingo ou recuperar um início atrasado. **Antes** da apuração do 2º turno não há o que carregar, porque os BUs ainda não existem. Medição: o AC do 1º turno (2.270 seções) levou 3 min 56 s com `CONCURRENCY=8`.
+Serve para carregar um pleito já publicado (o 1º turno), alcançar um lote grande no domingo ou recuperar um início atrasado. **Antes** da apuração do 2º turno não há o que carregar, porque os BUs ainda não existem. Medição: no 1º turno, o AC (2.270 seções) levou 3 min 56 s com `CONCURRENCY=8`, e a PB (10.712 seções) levou 3 min 23 s com `CONCURRENCY=64`. Nos dois casos, a view bateu exatamente com o resultado oficial da UF em presidente, governador e senador.
 
 ## Agenda
 
@@ -157,7 +162,7 @@ Depois que a janela fecha, o processo continua de pé, sem fazer nada. Se ele sa
 | `MAX_RETRIES` | não | `3` | Retentativas por request |
 | `RETRY_BASE_DELAY_MS` | não | `1000` | Base do backoff exponencial |
 | `REQUEST_TIMEOUT_MS` | não | `15000` | Timeout por tentativa |
-| `CONCURRENCY` | não | `8` | Requests simultâneos |
+| `CONCURRENCY` | não | `64` | Requests simultâneos |
 | `TSE_BASE_URL` | não | `https://resultados.tse.jus.br/oficial` | Para testes ou espelho |
 | `LOG_LEVEL` | não | `info` | `debug`, `info`, `warn` ou `error` |
 

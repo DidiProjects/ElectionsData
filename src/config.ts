@@ -142,7 +142,9 @@ export function loadConfig(env: Env): AppConfig {
     maxRetries: nonNegativeInt('MAX_RETRIES', 3),
     retryBaseDelayMs: nonNegativeInt('RETRY_BASE_DELAY_MS', 1000),
     requestTimeoutMs: positiveInt('REQUEST_TIMEOUT_MS', 15000),
-    concurrency: positiveInt('CONCURRENCY', 8),
+    // Measured on the 2026 first round: ~4,000 sections/min at 64 with no throttling,
+    // i.e. about 2h for the whole country.
+    concurrency: positiveInt('CONCURRENCY', 64),
   };
 
   // TSE serves these files with Cache-Control max-age≈52s; polling faster only adds load.
