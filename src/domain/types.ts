@@ -1,57 +1,20 @@
-export interface Municipality {
+import type { BallotBoxReport } from '../urna/bu.js';
+
+export interface Section {
+  /** Lowercase UF code; "zz" is abroad. */
   state: string;
-  code: string;
-  ibgeCode: string;
-  name: string;
+  municipalityCode: string;
+  municipalityName: string;
+  zone: string;
+  section: string;
+  /** Sections aggregated into this one (their votes are in this BU). */
+  aggregated: string[];
+  /** When the TSE published this section's BU ("dd/mm/yyyy hh:mm:ss"); null while unavailable. */
+  publishedAt: string | null;
 }
 
-export interface PollTarget {
-  municipality: Municipality;
-  officeCode: number;
-}
-
-export type TotalizationStatus = 'not_started' | 'in_progress' | 'finished';
-
-export interface SectionProgress {
-  total: number;
-  counted: number;
-  countedPct: number;
-}
-
-export interface VoteSummary {
-  electorate: number;
-  turnout: number;
-  abstention: number;
-  valid: number;
-  blank: number;
-  null: number;
-}
-
-export interface CandidateResult {
-  number: string;
-  name: string;
-  ballotName: string;
-  party: string;
-  coalition: string;
-  votes: number;
-  votesPct: number;
-  status: string;
-  elected: boolean;
-}
-
-export interface MunicipalityResult {
-  electionCode: number;
-  round: number;
-  officeCode: number;
-  officeName: string;
-  municipality: Municipality;
-  /** TSE generation id; monotonically increasing across publications of the same file. */
-  generationId: number;
-  generatedAt: string;
-  totalizationStatus: TotalizationStatus;
-  totalizationDate: string;
-  totalizationTime: string;
-  sections: SectionProgress;
-  votes: VoteSummary;
-  candidates: CandidateResult[];
+export interface SectionResult {
+  section: Section;
+  hash: string;
+  report: BallotBoxReport;
 }

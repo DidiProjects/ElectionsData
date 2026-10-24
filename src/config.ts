@@ -1,11 +1,14 @@
 export interface AppConfig {
   baseUrl: string;
   cycle: string;
-  electionCode: number;
+  /** "Pleito" groups every election held on the same day (e.g. 3221 = 2026 2nd round). */
+  pleitoCode: number;
   officeCodes: number[];
-  /** Lowercase UF codes; empty means every state published for the election. */
+  /** Lowercase UF codes; "zz" is abroad. */
   states: string[];
   outputDir: string;
+  outputPrefix: string;
+  maxVersions: number;
   pollIntervalMs: number;
   scheduleStart: Date | null;
   scheduleEnd: Date | null;
@@ -26,6 +29,10 @@ export class ConfigError extends Error {
 
 const DEFAULT_BASE_URL = 'https://resultados.tse.jus.br/oficial';
 export const MIN_POLL_INTERVAL_SECONDS = 30;
+export const ALL_STATES = [
+  'ac', 'al', 'am', 'ap', 'ba', 'ce', 'df', 'es', 'go', 'ma', 'mg', 'ms', 'mt', 'pa',
+  'pb', 'pe', 'pi', 'pr', 'rj', 'rn', 'ro', 'rr', 'rs', 'sc', 'se', 'sp', 'to', 'zz',
+];
 
 export function loadConfig(env: Env): AppConfig {
   const problems: string[] = [];
@@ -95,7 +102,12 @@ export function loadConfig(env: Env): AppConfig {
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
   for (const state of states) {
-    if (!/^[a-z]{2}$/.test(state)) problems.push(`STATES contains invalid UF "${state}"`);
+    if (!ALL_STATES.includes(state)) problems.push(`STATES contains invalid UF "${state}"`);
+  }
+
+  const outputPrefix = env.OUTPUT_PREFIX?.trim() || 'secoes';
+  if (!/^[A-Za-z0-9_-]+$/.test(outputPrefix)) {
+    problems.push(`OUTPUT_PREFIX may only contain letters, digits, "_" and "-", got "${outputPrefix}"`);
   }
 
   const cycle = required('ELECTION_CYCLE');
@@ -104,10 +116,12 @@ export function loadConfig(env: Env): AppConfig {
   const config: AppConfig = {
     baseUrl: (env.TSE_BASE_URL?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, ''),
     cycle,
-    electionCode: positiveInt('ELECTION_CODE'),
+    pleitoCode: positiveInt('PLEITO_CODE'),
     officeCodes,
-    states,
+    states: states.length > 0 ? states : [...ALL_STATES],
     outputDir: required('OUTPUT_DIR'),
+    outputPrefix,
+    maxVersions: positiveInt('MAX_CSV_VERSIONS', 1000),
     pollIntervalMs: positiveInt('POLL_INTERVAL_SECONDS') * 1000,
     scheduleStart: optionalDate('SCHEDULE_START'),
     scheduleEnd: optionalDate('SCHEDULE_END'),

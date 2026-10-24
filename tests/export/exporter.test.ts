@@ -1,81 +1,99 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { CSV_COLUMNS } from '../../src/export/csv.js';
-import { createExporter, csvFileName } from '../../src/export/exporter.js';
-import type { SnapshotWriter } from '../../src/export/snapshotWriter.js';
+import type { CandidateDirectory } from '../../src/export/candidateDirectory.js';
+import { CSV_HEADER } from '../../src/export/csv.js';
+import { createExporter } from '../../src/export/exporter.js';
+import type { VersionedCsvWriter } from '../../src/export/versionedCsvWriter.js';
 import { silentLogger, type Logger } from '../../src/logger.js';
-import { createResultStore, type ResultStore } from '../../src/results/resultStore.js';
-import { mapMunicipalityResult } from '../../src/tse/mapper.js';
-import { municipality, rawResult } from '../helpers.js';
-
-describe('csvFileName', () => {
-  it('pads election and office codes', () => {
-    expect(csvFileName('ele2026', 6258, 1)).toBe('ele2026_e006258_c0001.csv');
-  });
-});
+import { createSectionStore, type SectionStore } from '../../src/results/sectionStore.js';
+import { FakeClock, section } from '../helpers.js';
 
 describe('createExporter', () => {
-  let store: ResultStore;
-  let write: ReturnType<typeof vi.fn<SnapshotWriter['write']>>;
+  let store: SectionStore;
+  let written: string[];
+  let write: ReturnType<typeof vi.fn<VersionedCsvWriter['write']>>;
+  let names: CandidateDirectory & { load: ReturnType<typeof vi.fn> };
   let logger: Logger;
+  const clock = new FakeClock('2026-10-25T00:15:00Z');
 
-  const exporter = (officeCodes = [1, 3]) =>
-    createExporter({ store, writer: { write }, logger, cycle: 'ele2026', electionCode: 6258, officeCodes });
+  const exporter = (officeCodes = [1]) => createExporter({ store, names, writer: { write }, logger, clock, officeCodes });
 
-  const addResult = (officeCode = 1, code = '01007') => {
-    const m = municipality({ code });
-    const raw = rawResult({ cdabr: code, carg: [{ ...rawResult().carg[0]!, cd: String(officeCode) }] });
-    store.update({ municipality: m, officeCode }, mapMunicipalityResult(raw, m, officeCode), null);
-  };
+  const addSection = (sectionNumber: string, offices: Array<[number, number]> = [[6258, 1]]) =>
+    store.set({
+      section: section({ section: sectionNumber, state: 'al' }),
+      hash: 'h',
+      report: {
+        municipality: 1066,
+        zone: 4,
+        section: Number(sectionNumber),
+        emittedAt: '',
+        openedAt: '',
+        closedAt: '',
+        results: offices.map(([electionId, officeCode]) => ({
+          electionId,
+          officeCode,
+          eligible: 10,
+          turnout: 9,
+          votes: [{ type: 'nominal' as const, number: 13, votes: 9 }],
+        })),
+      },
+    });
 
   beforeEach(() => {
-    store = createResultStore();
-    write = vi.fn<SnapshotWriter['write']>(async () => ({ snapshotDir: '/out/20261025T200000000Z', latestPaths: [] }));
+    store = createSectionStore();
+    written = [];
+    write = vi.fn<VersionedCsvWriter['write']>(async (chunks) => {
+      written.push([...chunks].join(''));
+      return { version: 7, versionPath: '/out/s_7.csv', currentPath: '/out/s_current.csv', pruned: ['/out/s_0.csv'] };
+    });
+    names = { load: vi.fn(async () => undefined), nameOf: () => 'LULA' };
     logger = { ...silentLogger, info: vi.fn(), error: vi.fn() };
   });
 
-  it('writes nothing when no office has results', async () => {
+  it('writes nothing before any BU is stored', async () => {
     await exporter().exportAll();
     expect(write).not.toHaveBeenCalled();
   });
 
-  it('writes one snapshot with one CSV per office that has results', async () => {
-    addResult(1, '01007');
-    addResult(1, '01008');
-    addResult(3, '01007');
+  it('writes the header plus every stored section with Brasília generation time', async () => {
+    addSection('0001');
+    addSection('0002');
     await exporter().exportAll();
-    expect(write).toHaveBeenCalledTimes(1);
-    const files = write.mock.calls[0]?.[0] ?? [];
-    expect(files.map((f) => f.name)).toEqual(['ele2026_e006258_c0001.csv', 'ele2026_e006258_c0003.csv']);
-    expect(files[0]?.content.split('\n')[0]).toBe(CSV_COLUMNS.join(','));
-    expect(files[0]?.content.trimEnd().split('\n')).toHaveLength(5);
-    expect(logger.info).toHaveBeenCalledWith('snapshot written', {
-      snapshot: '/out/20261025T200000000Z',
-      municipalities: { 'ele2026_e006258_c0001.csv': 2, 'ele2026_e006258_c0003.csv': 1 },
+    const lines = (written[0] ?? '').trimEnd().split('\n');
+    expect(`${lines[0]}\n`).toBe(CSV_HEADER);
+    expect(lines).toHaveLength(3);
+    expect(lines[1]?.startsWith('2026-10-24 21:15:00,AL,01066,')).toBe(true);
+    expect(lines[1]).toContain(',13,LULA,9,');
+    expect(logger.info).toHaveBeenCalledWith('csv version written', {
+      version: 7,
+      file: '/out/s_7.csv',
+      current: '/out/s_current.csv',
+      sections: 2,
+      rows: 2,
+      pruned: 1,
     });
   });
 
-  it('skips offices without results', async () => {
-    addResult(1);
-    await exporter().exportAll();
-    expect(write.mock.calls[0]?.[0].map((f) => f.name)).toEqual(['ele2026_e006258_c0001.csv']);
+  it('loads candidate names only for configured offices present in the BUs', async () => {
+    addSection('0001', [
+      [6258, 1],
+      [6260, 3],
+    ]);
+    await exporter([1]).exportAll();
+    expect(names.load).toHaveBeenCalledWith([{ electionId: 6258, officeCode: 1, state: 'al' }]);
   });
 
-  it('writes a snapshot on every call, even when nothing changed', async () => {
-    addResult();
+  it('writes a new version on every call', async () => {
+    addSection('0001');
     const e = exporter();
     await e.exportAll();
     await e.exportAll();
     expect(write).toHaveBeenCalledTimes(2);
-    expect(write.mock.calls[1]?.[0]).toEqual(write.mock.calls[0]?.[0]);
   });
 
-  it('logs failures and tries again on the next job', async () => {
+  it('logs failures and tries again next job', async () => {
     write.mockRejectedValueOnce(new Error('disk full'));
-    addResult();
-    const e = exporter();
-    await e.exportAll();
-    expect(logger.error).toHaveBeenCalledWith('snapshot export failed, will retry next job', { error: 'disk full' });
-    await e.exportAll();
-    expect(write).toHaveBeenCalledTimes(2);
+    addSection('0001');
+    await exporter().exportAll();
+    expect(logger.error).toHaveBeenCalledWith('csv export failed, will retry next job', { error: 'disk full' });
   });
 });

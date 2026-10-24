@@ -17,9 +17,10 @@ async function main(): Promise<void> {
 
   logger.info('starting', {
     cycle: config.cycle,
-    electionCode: config.electionCode,
+    pleitoCode: config.pleitoCode,
     officeCodes: config.officeCodes,
-    states: config.states.length > 0 ? config.states : 'all',
+    states: config.states,
+    outputPrefix: config.outputPrefix,
     outputDir: config.outputDir,
   });
 

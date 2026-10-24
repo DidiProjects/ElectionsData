@@ -5,11 +5,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, USER_AGENT } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import type { FetchFn } from '../src/http/httpClient.js';
-import { silentLogger, type Logger } from '../src/logger.js';
-import { emptyResponse, FakeClock, jsonResponse, rawResult, rawTracking } from './helpers.js';
+import { silentLogger } from '../src/logger.js';
+import {
+  buildBallotBoxReport,
+  bytesResponse,
+  emptyResponse,
+  FakeClock,
+  jsonResponse,
+  rawAux,
+  rawCandidates,
+  rawSectionList,
+} from './helpers.js';
 
-const BASE = 'https://tse.example/oficial/ele2026/6258';
-const PREFIX = 'ele2026_e006258_c0001';
+const BASE = 'https://tse.example/oficial/ele2026';
+const ARCHIVE = `${BASE}/arquivo-urna/3221`;
 
 describe('createApp', () => {
   let dir: string;
@@ -19,35 +28,50 @@ describe('createApp', () => {
   });
   afterEach(() => fs.rm(dir, { recursive: true, force: true }));
 
-  it('publishes a snapshot folder per complete job and keeps the root file on the newest one', async () => {
-    const clock = new FakeClock('2026-10-25T20:00:00Z');
-    const logger: Logger = { ...silentLogger, warn: vi.fn() };
-    let cycle = 0;
-    let firstOutraCall = true;
+  it('fetches each published BU once and writes a numbered version plus current per job', async () => {
+    const clock = new FakeClock('2026-10-26T00:00:00Z');
+    let listCalls = 0;
     const fetch = vi.fn<FetchFn>(async (url, init) => {
       const etag = (init.headers as Record<string, string>)['If-None-Match'];
-      if (url === `${BASE}/config/mun-e006258-cm.json`) {
-        return jsonResponse({
-          dg: '',
-          hg: '',
-          abr: [{ cd: 'ac', ds: 'ACRE', mu: [{ cd: '01007', cdi: '1200138', nm: 'CIDADE TESTE' }, { cd: '01008', cdi: '1', nm: 'OUTRA' }] }],
-        });
+      if (url === `${ARCHIVE}/config/ac/ac-p003221-cs.json`) {
+        listCalls++;
+        if (listCalls === 2 && etag) return emptyResponse(304);
+        return jsonResponse(
+          rawSectionList([
+            { ns: '0001', nsa: ['0009'], published: '25/10/2026 21:00:00' },
+            { ns: '0009', nsp: '0001' },
+            { ns: '0002', ...(listCalls >= 3 ? { published: '25/10/2026 21:01:00' } : {}) },
+          ]),
+          { headers: { etag: `"l${listCalls}"` } },
+        );
       }
-      if (url === `${BASE}/dados/ac/ac-e006258-ab.json`) {
-        cycle++;
-        if (cycle === 2 && etag) return emptyResponse(304);
-        const ht = cycle >= 3 ? '18:05:00' : '18:00:00';
-        return jsonResponse(rawTracking([{ code: '01007', ht }, { code: '01008' }]), { headers: { etag: `"ab${cycle}"` } });
+      const aux = /\/dados\/ac\/01066\/0004\/(\d{4})\/p003221-ac-m01066-z0004-s\d{4}-aux\.json$/.exec(url);
+      if (aux) return jsonResponse(rawAux([{ hash: `h${aux[1]}`, files: [{ nm: `s${aux[1]}-bu.dat`, tp: 'bu' }] }]));
+      const bu = /\/dados\/ac\/01066\/0004\/(\d{4})\/h\d{4}\/s\d{4}-bu\.dat$/.exec(url);
+      if (bu) {
+        return bytesResponse(
+          buildBallotBoxReport({
+            municipality: 1066,
+            zone: 4,
+            section: Number(bu[1]),
+            offices: [
+              {
+                electionId: 6258,
+                officeCode: 1,
+                eligible: 300,
+                turnout: 200,
+                votes: [
+                  { type: 1, votes: 120, number: 13 },
+                  { type: 1, votes: 70, number: 22 },
+                  { type: 3, votes: 10 },
+                ],
+              },
+            ],
+          }),
+        );
       }
-      const match = /\/dados\/ac\/ac(\d{5})-c0001-e006258-u\.json$/.exec(url);
-      if (match) {
-        if (match[1] === '01008' && firstOutraCall) {
-          firstOutraCall = false;
-          return jsonResponse({ broken: true });
-        }
-        return jsonResponse(rawResult({ cdabr: match[1], idg: String(100 + cycle), ht: `18:0${cycle}:00` }), {
-          headers: { etag: `"r${cycle}"` },
-        });
+      if (url === `${BASE}/6258/dados/ac/ac-c0001-e006258-u.json`) {
+        return jsonResponse(rawCandidates([{ n: '13', nmu: 'CANDIDATO TREZE' }, { n: '22', nmu: 'CANDIDATO VINTE E DOIS' }]));
       }
       return emptyResponse(404);
     });
@@ -55,39 +79,42 @@ describe('createApp', () => {
     const config = loadConfig({
       TSE_BASE_URL: 'https://tse.example/oficial',
       ELECTION_CYCLE: 'ele2026',
-      ELECTION_CODE: '6258',
+      PLEITO_CODE: '3221',
       OFFICE_CODES: '1',
+      STATES: 'ac',
       OUTPUT_DIR: dir,
+      OUTPUT_PREFIX: 'secoes_2t2026',
       POLL_INTERVAL_SECONDS: '30',
-      SCHEDULE_END: '2026-10-25T20:01:15Z',
+      SCHEDULE_END: '2026-10-26T00:01:15Z',
     });
-    await expect(createApp(config, { fetch, clock, logger }).run()).resolves.toBe('completed');
+    await expect(createApp(config, { fetch, clock, logger: silentLogger }).run()).resolves.toBe('completed');
 
-    // Cycle 1 leaves 01008 without a valid value: nothing may be published.
-    expect(logger.warn).toHaveBeenCalledWith(
-      'cycle left gaps, export skipped until every municipality has a value',
-      { missing: 1 },
-    );
-    // Cycle 2 (tracking 304) retries only 01008; cycle 3 only the municipality that moved.
-    const resultCalls = fetch.mock.calls.map(([url]) => url).filter((u) => u.endsWith('-u.json'));
-    expect(resultCalls).toEqual([
-      `${BASE}/dados/ac/ac01007-c0001-e006258-u.json`,
-      `${BASE}/dados/ac/ac01008-c0001-e006258-u.json`,
-      `${BASE}/dados/ac/ac01008-c0001-e006258-u.json`,
-      `${BASE}/dados/ac/ac01007-c0001-e006258-u.json`,
+    const urls = fetch.mock.calls.map(([url]) => url);
+    expect(listCalls).toBe(3);
+    // Section 0001 in job 1, nothing in job 2 (304), section 0002 once published in job 3.
+    expect(urls.filter((u) => u.endsWith('-bu.dat'))).toEqual([
+      `${ARCHIVE}/dados/ac/01066/0004/0001/h0001/s0001-bu.dat`,
+      `${ARCHIVE}/dados/ac/01066/0004/0002/h0002/s0002-bu.dat`,
     ]);
+    expect(urls.filter((u) => u.endsWith('-u.json'))).toHaveLength(1);
     expect((fetch.mock.calls[0]?.[1].headers as Record<string, string>)['User-Agent']).toBe(USER_AGENT);
 
-    // Cycle 1 had a gap, so only jobs 2 and 3 published a snapshot folder.
-    const CSV = `${PREFIX}.csv`;
-    expect((await fs.readdir(dir)).sort()).toEqual(['20261025T200030000Z', '20261025T200100000Z', CSV]);
-    const first = await fs.readFile(path.join(dir, '20261025T200030000Z', CSV), 'utf8');
-    const newest = await fs.readFile(path.join(dir, '20261025T200100000Z', CSV), 'utf8');
-    const latest = await fs.readFile(path.join(dir, CSV), 'utf8');
-    for (const csv of [first, newest]) {
-      expect(new Set(csv.trimEnd().split('\n').slice(1).map((l) => l.split(',')[5]))).toEqual(new Set(['01007', '01008']));
-    }
-    expect(latest).toBe(newest);
-    expect(newest).toContain(',18:03:00,');
+    expect((await fs.readdir(dir)).sort()).toEqual([
+      'secoes_2t2026_0.csv',
+      'secoes_2t2026_1.csv',
+      'secoes_2t2026_2.csv',
+      'secoes_2t2026_current.csv',
+    ]);
+    const read = (name: string) => fs.readFile(path.join(dir, name), 'utf8');
+    const rows = (csv: string) => csv.trimEnd().split('\n').slice(1);
+    expect(rows(await read('secoes_2t2026_0.csv'))).toHaveLength(3);
+    expect(rows(await read('secoes_2t2026_1.csv'))).toHaveLength(3);
+    const latest = await read('secoes_2t2026_2.csv');
+    expect(rows(latest)).toHaveLength(6);
+    expect(await read('secoes_2t2026_current.csv')).toBe(latest);
+    expect(rows(latest)[0]).toBe(
+      '2026-10-25 21:01:00,AC,01066,CIDADE 01066,4,1,9,6258,1,Presidente,nominal,13,CANDIDATO TREZE,120,300,200,' +
+        '2026-10-25 21:00:00,2026-10-25 08:00:00,2026-10-25 17:00:00,2026-10-25 17:02:00',
+    );
   });
 });

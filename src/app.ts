@@ -1,14 +1,15 @@
 import type { Clock } from './clock.js';
 import type { AppConfig } from './config.js';
+import { createCandidateDirectory } from './export/candidateDirectory.js';
 import { createExporter } from './export/exporter.js';
-import { createSnapshotWriter } from './export/snapshotWriter.js';
+import { createVersionedCsvWriter } from './export/versionedCsvWriter.js';
 import { createCooldownGate } from './http/cooldownGate.js';
 import { createHttpClient, type FetchFn } from './http/httpClient.js';
 import type { Logger } from './logger.js';
-import { createPoller } from './polling/poller.js';
-import { createResultStore } from './results/resultStore.js';
+import { createSectionPoller } from './polling/sectionPoller.js';
+import { createSectionStore } from './results/sectionStore.js';
 import { runWindow, type WindowOutcome } from './scheduler/scheduler.js';
-import { createTseClient } from './tse/tseClient.js';
+import { createUrnaClient } from './urna/urnaClient.js';
 
 export interface AppDependencies {
   fetch: FetchFn;
@@ -37,22 +38,27 @@ export function createApp(config: AppConfig, deps: AppDependencies): App {
     timeoutMs: config.requestTimeoutMs,
     userAgent: USER_AGENT,
   });
-  const client = createTseClient(http, config);
-  const store = createResultStore();
-  const poller = createPoller({
+  const client = createUrnaClient(http, config);
+  const store = createSectionStore();
+  const poller = createSectionPoller({
     client,
     store,
     logger,
+    clock,
     states: config.states,
-    officeCodes: config.officeCodes,
     concurrency: config.concurrency,
+    jobBudgetMs: config.pollIntervalMs,
   });
   const exporter = createExporter({
     store,
     logger,
-    writer: createSnapshotWriter({ outputDir: config.outputDir, clock }),
-    cycle: config.cycle,
-    electionCode: config.electionCode,
+    clock,
+    names: createCandidateDirectory(client, logger),
+    writer: createVersionedCsvWriter({
+      outputDir: config.outputDir,
+      prefix: config.outputPrefix,
+      maxVersions: config.maxVersions,
+    }),
     officeCodes: config.officeCodes,
   });
 
@@ -65,19 +71,12 @@ export function createApp(config: AppConfig, deps: AppDependencies): App {
         window: { start: config.scheduleStart, end: config.scheduleEnd },
         tasks: [
           {
-            name: 'poll',
+            name: 'sections',
             intervalMs: config.pollIntervalMs,
             run: async (taskSignal) => {
               const stats = await poller.pollOnce(taskSignal);
-              logger.info('poll cycle finished', { ...stats });
-              // Exporting mid-sweep would publish a CSV that silently lacks municipalities.
-              if (stats.complete) {
-                await exporter.exportAll();
-              } else {
-                logger.warn('cycle left gaps, export skipped until every municipality has a value', {
-                  missing: stats.missing,
-                });
-              }
+              logger.info('job finished', { ...stats });
+              await exporter.exportAll();
             },
           },
         ],

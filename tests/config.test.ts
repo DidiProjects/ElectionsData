@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { ConfigError, loadConfig, type Env } from '../src/config.js';
+import { ALL_STATES, ConfigError, loadConfig, type Env } from '../src/config.js';
 
 const base: Env = {
   ELECTION_CYCLE: 'ele2026',
-  ELECTION_CODE: '6258',
+  PLEITO_CODE: '3221',
   OFFICE_CODES: '1, 3',
   OUTPUT_DIR: '/data/output',
   POLL_INTERVAL_SECONDS: '60',
@@ -25,10 +25,12 @@ describe('loadConfig', () => {
     expect(config).toEqual({
       baseUrl: 'https://resultados.tse.jus.br/oficial',
       cycle: 'ele2026',
-      electionCode: 6258,
+      pleitoCode: 3221,
       officeCodes: [1, 3],
-      states: [],
+      states: ALL_STATES,
       outputDir: '/data/output',
+      outputPrefix: 'secoes',
+      maxVersions: 1000,
       pollIntervalMs: 60_000,
       scheduleStart: null,
       scheduleEnd: null,
@@ -44,6 +46,8 @@ describe('loadConfig', () => {
       ...base,
       TSE_BASE_URL: 'http://mirror.local/oficial/',
       STATES: 'SP, rj',
+      OUTPUT_PREFIX: 'secoes_2t2026',
+      MAX_CSV_VERSIONS: '50',
       SCHEDULE_START: '2026-10-25T17:00:00-03:00',
       SCHEDULE_END: '2026-10-26T06:00:00Z',
       MAX_RETRIES: '0',
@@ -53,6 +57,8 @@ describe('loadConfig', () => {
     });
     expect(config.baseUrl).toBe('http://mirror.local/oficial');
     expect(config.states).toEqual(['sp', 'rj']);
+    expect(config.outputPrefix).toBe('secoes_2t2026');
+    expect(config.maxVersions).toBe(50);
     expect(config.scheduleStart?.toISOString()).toBe('2026-10-25T20:00:00.000Z');
     expect(config.scheduleEnd?.toISOString()).toBe('2026-10-26T06:00:00.000Z');
     expect(config.maxRetries).toBe(0);
@@ -66,7 +72,7 @@ describe('loadConfig', () => {
       expect.arrayContaining([
         'OFFICE_CODES is required',
         'ELECTION_CYCLE is required',
-        'ELECTION_CODE is required',
+        'PLEITO_CODE is required',
         'OUTPUT_DIR is required',
         'POLL_INTERVAL_SECONDS is required',
       ]),
@@ -74,9 +80,12 @@ describe('loadConfig', () => {
   });
 
   it.each([
-    [{ ELECTION_CODE: 'abc' }, 'ELECTION_CODE must be a positive integer, got "abc"'],
+    [{ PLEITO_CODE: 'abc' }, 'PLEITO_CODE must be a positive integer, got "abc"'],
     [{ OFFICE_CODES: '1,x' }, 'OFFICE_CODES contains invalid code "x"'],
     [{ STATES: 'sao' }, 'STATES contains invalid UF "sao"'],
+    [{ STATES: 'xx' }, 'STATES contains invalid UF "xx"'],
+    [{ OUTPUT_PREFIX: 'a/b' }, 'OUTPUT_PREFIX may only contain letters, digits, "_" and "-", got "a/b"'],
+    [{ MAX_CSV_VERSIONS: '0' }, 'MAX_CSV_VERSIONS must be a positive integer, got "0"'],
     [{ ELECTION_CYCLE: '2026' }, 'ELECTION_CYCLE must look like "ele2026", got "2026"'],
     [{ MAX_RETRIES: '-1' }, 'MAX_RETRIES must be a non-negative integer, got "-1"'],
     [{ POLL_INTERVAL_SECONDS: '10' }, 'POLL_INTERVAL_SECONDS must be at least 30'],

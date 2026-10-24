@@ -1,48 +1,72 @@
+import type { Clock } from '../clock.js';
+import type { SectionResult } from '../domain/types.js';
 import type { Logger } from '../logger.js';
-import type { ResultStore } from '../results/resultStore.js';
-import { serializeCsv, toCsvRows } from './csv.js';
-import type { CsvFile, SnapshotWriter } from './snapshotWriter.js';
+import type { SectionStore } from '../results/sectionStore.js';
+import type { CandidateDirectory, CandidateKey } from './candidateDirectory.js';
+import { CSV_HEADER, serializeCsvRow, toCsvRows } from './csv.js';
+import { formatBrasilia } from './format.js';
+import type { VersionedCsvWriter } from './versionedCsvWriter.js';
 
 export interface Exporter {
   exportAll(): Promise<void>;
 }
 
 export interface ExporterOptions {
-  store: ResultStore;
-  writer: SnapshotWriter;
+  store: SectionStore;
+  names: CandidateDirectory;
+  writer: VersionedCsvWriter;
   logger: Logger;
-  cycle: string;
-  electionCode: number;
+  clock: Clock;
   officeCodes: number[];
 }
 
-export function csvFileName(cycle: string, electionCode: number, officeCode: number): string {
-  return `${cycle}_e${String(electionCode).padStart(6, '0')}_c${String(officeCode).padStart(4, '0')}.csv`;
+function candidateKeys(results: readonly SectionResult[], officeCodes: ReadonlySet<number>): CandidateKey[] {
+  const keys = new Map<string, CandidateKey>();
+  for (const { section, report } of results) {
+    for (const r of report.results) {
+      if (!officeCodes.has(r.officeCode)) continue;
+      keys.set(`${r.electionId}|${r.officeCode}|${section.state}`, {
+        electionId: r.electionId,
+        officeCode: r.officeCode,
+        state: section.state,
+      });
+    }
+  }
+  return [...keys.values()];
 }
 
 export function createExporter(options: ExporterOptions): Exporter {
+  const offices = new Set(options.officeCodes);
   return {
     async exportAll() {
-      const files: CsvFile[] = [];
-      const municipalities: Record<string, number> = {};
-      for (const officeCode of options.officeCodes) {
-        const results = options.store.byOffice(officeCode);
-        // An office with only confirmed 404s (e.g. no runoff anywhere) has nothing to publish.
-        if (results.length === 0) continue;
-        const name = csvFileName(options.cycle, options.electionCode, officeCode);
-        municipalities[name] = results.length;
-        files.push({ name, content: serializeCsv(toCsvRows(results)) });
+      // Before the first BU is published there is nothing to report; skipping keeps
+      // the evening's empty jobs from eating into the version limit.
+      if (options.store.size === 0) return;
+
+      const results = options.store.all();
+      await options.names.load(candidateKeys(results, offices));
+      const generatedAt = formatBrasilia(options.clock.now());
+      let rows = 0;
+      function* chunks(): Generator<string> {
+        yield CSV_HEADER;
+        for (const row of toCsvRows(results, offices, generatedAt, options.names.nameOf)) {
+          rows++;
+          yield serializeCsvRow(row);
+        }
       }
-      if (files.length === 0) return;
 
       try {
-        const outcome = await options.writer.write(files);
-        options.logger.info('snapshot written', {
-          snapshot: outcome.snapshotDir,
-          municipalities,
+        const outcome = await options.writer.write(chunks());
+        options.logger.info('csv version written', {
+          version: outcome.version,
+          file: outcome.versionPath,
+          current: outcome.currentPath,
+          sections: results.length,
+          rows,
+          pruned: outcome.pruned.length,
         });
       } catch (error) {
-        options.logger.error('snapshot export failed, will retry next job', { error: (error as Error).message });
+        options.logger.error('csv export failed, will retry next job', { error: (error as Error).message });
       }
     },
   };
