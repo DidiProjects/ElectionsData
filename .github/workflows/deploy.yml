@@ -103,12 +103,14 @@ jobs:
             -v "${OUTPUT_HOST_DIR}:/data/output" \
             -e OUTPUT_DIR=/data/output \
             -e ELECTION_CYCLE="${{ vars.ELECTION_CYCLE }}" \
-            -e ELECTION_CODE="${{ vars.ELECTION_CODE }}" \
+            -e PLEITO_CODE="${{ vars.PLEITO_CODE }}" \
             -e OFFICE_CODES="${{ vars.OFFICE_CODES }}" \
             -e STATES="${{ vars.STATES }}" \
             -e SCHEDULE_START="${{ vars.SCHEDULE_START }}" \
             -e SCHEDULE_END="${{ vars.SCHEDULE_END }}" \
             -e POLL_INTERVAL_SECONDS="${{ vars.POLL_INTERVAL_SECONDS || '60' }}" \
+            -e OUTPUT_PREFIX="${{ vars.OUTPUT_PREFIX || 'secoes' }}" \
+            -e MAX_CSV_VERSIONS="${{ vars.MAX_CSV_VERSIONS || '1000' }}" \
             -e MAX_RETRIES="${{ vars.MAX_RETRIES || '3' }}" \
             -e CONCURRENCY="${{ vars.CONCURRENCY || '8' }}" \
             -e LOG_LEVEL="${{ vars.LOG_LEVEL || 'info' }}" \
