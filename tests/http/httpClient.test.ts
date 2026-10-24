@@ -46,7 +46,19 @@ describe('createHttpClient', () => {
     const { client, fetch } = setup([jsonResponse({ a: 1 }, { headers: { etag: '"v1"' } })]);
     await expect(client.getJson(URL)).resolves.toEqual({ kind: 'ok', body: { a: 1 }, etag: '"v1"' });
     const init = fetch.mock.calls[0]?.[1];
-    expect(init?.headers).toEqual({ Accept: 'application/json', 'User-Agent': 'test-agent' });
+    expect(init?.headers).toEqual({ 'User-Agent': 'test-agent' });
+  });
+
+  it('downloads binary bodies with getBytes', async () => {
+    const { client } = setup([new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { etag: '"b1"' } })]);
+    const response = await client.getBytes(URL);
+    expect(response).toEqual({ kind: 'ok', body: Buffer.from([1, 2, 3]), etag: '"b1"' });
+  });
+
+  it('retries getBytes like any other request', async () => {
+    const { client, fetch } = setup([emptyResponse(503), new Response(new Uint8Array([9]), { status: 200 })]);
+    await expect(client.getBytes(URL)).resolves.toMatchObject({ kind: 'ok', body: Buffer.from([9]) });
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it('sends If-None-Match and reports not_modified on 304', async () => {

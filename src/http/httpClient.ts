@@ -4,14 +4,24 @@ import type { CooldownGate } from './cooldownGate.js';
 
 export type FetchFn = (url: string, init: RequestInit) => Promise<Response>;
 
-export type JsonResponse =
-  | { kind: 'ok'; body: unknown; etag: string | null }
+export type HttpResponse<T> =
+  | { kind: 'ok'; body: T; etag: string | null }
   | { kind: 'not_modified' }
   | { kind: 'not_found' };
 
-export interface HttpClient {
-  getJson(url: string, options?: { etag?: string | null; signal?: AbortSignal }): Promise<JsonResponse>;
+export type JsonResponse = HttpResponse<unknown>;
+
+export interface RequestOptions {
+  etag?: string | null;
+  signal?: AbortSignal;
 }
+
+export interface HttpClient {
+  getJson(url: string, options?: RequestOptions): Promise<JsonResponse>;
+  getBytes(url: string, options?: RequestOptions): Promise<HttpResponse<Buffer>>;
+}
+
+type BodyReader<T> = (response: Response) => Promise<T>;
 
 export interface HttpClientOptions {
   fetch: FetchFn;
@@ -68,14 +78,18 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
     return Math.floor(random() * cap);
   };
 
-  const attemptOnce = async (url: string, etag: string | null | undefined, signal?: AbortSignal): Promise<JsonResponse> => {
+  const attemptOnce = async <T>(
+    url: string,
+    read: BodyReader<T>,
+    etag: string | null | undefined,
+    signal?: AbortSignal,
+  ): Promise<HttpResponse<T>> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), options.timeoutMs);
     const onAbort = (): void => controller.abort();
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
       const headers: Record<string, string> = {
-        Accept: 'application/json',
         'User-Agent': options.userAgent,
       };
       if (etag) headers['If-None-Match'] = etag;
@@ -100,12 +114,12 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
         throw new HttpRequestError(`HTTP ${response.status}`, url, 1, response.status);
       }
 
-      let body: unknown;
+      let body: T;
       try {
-        body = await response.json();
+        body = await read(response);
       } catch (error) {
         // A file caught mid-publication can come back truncated; worth another try.
-        throw new RetryableError(`invalid JSON: ${(error as Error).message}`, response.status);
+        throw new RetryableError(`unreadable body: ${(error as Error).message}`, response.status);
       }
       return { kind: 'ok', body, etag: response.headers.get('etag') };
     } finally {
@@ -114,36 +128,40 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
     }
   };
 
-  return {
-    async getJson(url, { etag, signal } = {}) {
-      let lastError: RetryableError | undefined;
-      for (let attempt = 0; attempt <= options.maxRetries; attempt++) {
-        if (signal?.aborted) break;
-        await options.gate.wait(signal);
-        try {
-          return await attemptOnce(url, etag, signal);
-        } catch (error) {
-          if (error instanceof HttpRequestError) {
-            throw new HttpRequestError(error.message, url, attempt + 1, error.status);
-          }
-          lastError = error as RetryableError;
+  const request = async <T>(url: string, read: BodyReader<T>, { etag, signal }: RequestOptions = {}) => {
+    let lastError: RetryableError | undefined;
+    for (let attempt = 0; attempt <= options.maxRetries; attempt++) {
+      if (signal?.aborted) break;
+      await options.gate.wait(signal);
+      try {
+        return await attemptOnce(url, read, etag, signal);
+      } catch (error) {
+        if (error instanceof HttpRequestError) {
+          throw new HttpRequestError(error.message, url, attempt + 1, error.status);
         }
-        if (attempt === options.maxRetries) break;
-
-        const throttled = lastError.status === 429 || lastError.status === 503;
-        const delay = Math.max(backoffMs(attempt), lastError.retryAfterMs ?? 0);
-        if (throttled) {
-          options.gate.pauseUntil(new Date(options.clock.now().getTime() + delay));
-        }
-        options.logger.debug('retrying request', { url, attempt: attempt + 1, delayMs: delay, reason: lastError.message });
-        await options.clock.sleep(delay, signal);
+        lastError = error as RetryableError;
       }
-      throw new HttpRequestError(
-        signal?.aborted ? 'aborted' : `failed after ${options.maxRetries + 1} attempts: ${lastError?.message}`,
-        url,
-        options.maxRetries + 1,
-        lastError?.status,
-      );
-    },
+      if (attempt === options.maxRetries) break;
+
+      const throttled = lastError.status === 429 || lastError.status === 503;
+      const delay = Math.max(backoffMs(attempt), lastError.retryAfterMs ?? 0);
+      if (throttled) {
+        options.gate.pauseUntil(new Date(options.clock.now().getTime() + delay));
+      }
+      options.logger.debug('retrying request', { url, attempt: attempt + 1, delayMs: delay, reason: lastError.message });
+      await options.clock.sleep(delay, signal);
+    }
+    throw new HttpRequestError(
+      signal?.aborted ? 'aborted' : `failed after ${options.maxRetries + 1} attempts: ${lastError?.message}`,
+      url,
+      options.maxRetries + 1,
+      lastError?.status,
+    );
+  };
+
+  return {
+    getJson: (url, requestOptions) => request(url, (r) => r.json() as Promise<unknown>, requestOptions),
+    getBytes: (url, requestOptions) =>
+      request(url, async (r) => Buffer.from(await r.arrayBuffer()), requestOptions),
   };
 }
