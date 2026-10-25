@@ -40,7 +40,7 @@ describe('loadConfig', () => {
       maxRetries: 3,
       retryBaseDelayMs: 1000,
       requestTimeoutMs: 15000,
-      concurrency: 64,
+      concurrency: 16,
     });
   });
 
