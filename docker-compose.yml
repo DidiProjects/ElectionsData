@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: elections-postgres
+    environment:
+      - POSTGRES_DB=elections
+      - POSTGRES_USER=elections
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Published on localhost only, for querying from the host (psql, DBeaver...).
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U elections -d elections"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  worker:
+    build: .
+    container_name: elections-data-worker
+    env_file: .env
+    environment:
+      - OUTPUT_DIR=/data/output
+      - DATABASE_URL=postgresql://elections:${POSTGRES_PASSWORD}@postgres:5432/elections
+    volumes:
+      - ${OUTPUT_HOST_DIR:-./output}:/data/output
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres_data:
