@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { Clock } from './clock.js';
-import type { AppConfig } from './config.js';
+import type { AppConfig, Collector } from './config.js';
 import { createCandidateDirectory } from './export/candidateDirectory.js';
 import { createExporter } from './export/exporter.js';
 import { createVersionedCsvWriter } from './export/versionedCsvWriter.js';
@@ -11,7 +11,7 @@ import { createMunicipalCollector } from './municipal/collector.js';
 import { createSectionPoller } from './polling/sectionPoller.js';
 import type { CandidateSink, SectionRepository } from './results/sectionRepository.js';
 import { createSectionStore } from './results/sectionStore.js';
-import { runWindow, type WindowOutcome } from './scheduler/scheduler.js';
+import { runWindow, type ScheduledTask, type WindowOutcome } from './scheduler/scheduler.js';
 import { createUrnaClient } from './urna/urnaClient.js';
 
 export interface AppDependencies {
@@ -108,25 +108,31 @@ export function createApp(config: AppConfig, deps: AppDependencies): App {
         signal,
         window: { start: config.scheduleStart, end: config.scheduleEnd },
         // Independent tasks: a slow BU batch never delays the live municipality partials.
-        tasks: [
-          {
-            name: 'sections',
-            intervalMs: config.pollIntervalMs,
-            run: async (taskSignal) => {
-              const stats = await poller.pollOnce(taskSignal);
-              logger.info('job finished', { ...stats });
-              await exporter.exportAll();
+        tasks: (
+          [
+            {
+              collector: 'secoes',
+              name: 'sections',
+              intervalMs: config.pollIntervalMs,
+              run: async (taskSignal) => {
+                const stats = await poller.pollOnce(taskSignal);
+                logger.info('job finished', { ...stats });
+                await exporter.exportAll();
+              },
             },
-          },
-          {
-            name: 'municipalities',
-            intervalMs: config.pollIntervalMs,
-            run: async (taskSignal) => {
-              const stats = await municipal.runJob(taskSignal);
-              logger.info('municipal job finished', { complete: stats.complete, elections: stats.elections });
+            {
+              collector: 'municipios',
+              name: 'municipalities',
+              intervalMs: config.pollIntervalMs,
+              run: async (taskSignal) => {
+                const stats = await municipal.runJob(taskSignal);
+                logger.info('municipal job finished', { complete: stats.complete, elections: stats.elections });
+              },
             },
-          },
-        ],
+          ] satisfies Array<ScheduledTask & { collector: Collector }>
+        )
+          .filter((task) => config.collectors.includes(task.collector))
+          .map(({ collector: _collector, ...task }) => task),
       }),
 
     async backfill(signal) {

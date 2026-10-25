@@ -189,6 +189,7 @@ Depois que a janela fecha, o processo continua de pé, sem fazer nada. Se ele sa
 | `STATES` | não | todas + `zz` | UFs separadas por vírgula |
 | `OUTPUT_DIR` | sim | `/data/output` na imagem | Pasta dos CSVs |
 | `DATABASE_URL` | sim | — (o compose monta a partir de `POSTGRES_PASSWORD`) | Postgres com os BUs decodificados |
+| `COLLECTORS` | não | `municipios` | Coletores do `MODE=job`: `municipios` e/ou `secoes`. O de seções vem desligado porque, no limite do TSE, o Brasil inteiro leva de 8 a 11 h |
 | `MODE` | não | `job` | `job` (janela e os dois coletores periódicos) ou `backfill` (carga avulsa de BUs que termina sozinha; não roda o coletor por município) |
 | `OUTPUT_TAG` | não | vazio | Rótulo nos nomes dos arquivos, ex. `2t2026` → `secoes/secoes_2t2026_0.csv` |
 | `MAX_CSV_VERSIONS` | não | `1000` | Versões numeradas mantidas **por pasta** (o `_current` não conta) |

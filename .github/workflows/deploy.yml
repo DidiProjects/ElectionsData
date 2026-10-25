@@ -152,6 +152,7 @@ jobs:
             -e ELECTION_CYCLE="${{ vars.ELECTION_CYCLE }}" \
             -e PLEITO_CODE="${{ vars.PLEITO_CODE }}" \
             -e OFFICE_CODES="${{ vars.OFFICE_CODES }}" \
+            -e COLLECTORS="${{ vars.COLLECTORS || 'municipios' }}" \
             -e STATES="${{ vars.STATES }}" \
             -e SCHEDULE_START="${{ vars.SCHEDULE_START }}" \
             -e SCHEDULE_END="${{ vars.SCHEDULE_END }}" \
