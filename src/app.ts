@@ -1,3 +1,4 @@
+import path from 'node:path';
 import type { Clock } from './clock.js';
 import type { AppConfig } from './config.js';
 import { createCandidateDirectory } from './export/candidateDirectory.js';
@@ -6,6 +7,7 @@ import { createVersionedCsvWriter } from './export/versionedCsvWriter.js';
 import { createCooldownGate } from './http/cooldownGate.js';
 import { createHttpClient, type FetchFn } from './http/httpClient.js';
 import type { Logger } from './logger.js';
+import { createMunicipalCollector } from './municipal/collector.js';
 import { createSectionPoller } from './polling/sectionPoller.js';
 import type { CandidateSink, SectionRepository } from './results/sectionRepository.js';
 import { createSectionStore } from './results/sectionStore.js';
@@ -41,6 +43,9 @@ export interface App {
 export const USER_AGENT = 'elections-data-worker/1.0 (+https://github.com/DidiProjects/ElectionsData)';
 const MAX_RETRY_DELAY_MS = 30_000;
 
+/** "secoes" + "2t2026" -> "secoes_2t2026"; no tag -> "secoes". */
+export const fileName = (kind: string, tag: string): string => (tag ? `${kind}_${tag}` : kind);
+
 export function createApp(config: AppConfig, deps: AppDependencies): App {
   const { clock, logger } = deps;
 
@@ -73,11 +78,26 @@ export function createApp(config: AppConfig, deps: AppDependencies): App {
     clock,
     names: createCandidateDirectory(client, deps.repository, logger),
     writer: createVersionedCsvWriter({
-      outputDir: config.outputDir,
-      prefix: config.outputPrefix,
+      outputDir: path.join(config.outputDir, 'secoes'),
+      prefix: fileName('secoes', config.outputTag),
       maxVersions: config.maxVersions,
     }),
     officeCodes: config.officeCodes,
+  });
+  const municipal = createMunicipalCollector({
+    http,
+    logger,
+    writer: createVersionedCsvWriter({
+      outputDir: path.join(config.outputDir, 'municipios'),
+      prefix: fileName('municipios', config.outputTag),
+      maxVersions: config.maxVersions,
+    }),
+    baseUrl: config.baseUrl,
+    cycle: config.cycle,
+    pleitoCode: config.pleitoCode,
+    officeCodes: config.officeCodes,
+    states: config.states,
+    concurrency: config.concurrency,
   });
 
   return {
@@ -87,6 +107,7 @@ export function createApp(config: AppConfig, deps: AppDependencies): App {
         logger,
         signal,
         window: { start: config.scheduleStart, end: config.scheduleEnd },
+        // Independent tasks: a slow BU batch never delays the live municipality partials.
         tasks: [
           {
             name: 'sections',
@@ -95,6 +116,14 @@ export function createApp(config: AppConfig, deps: AppDependencies): App {
               const stats = await poller.pollOnce(taskSignal);
               logger.info('job finished', { ...stats });
               await exporter.exportAll();
+            },
+          },
+          {
+            name: 'municipalities',
+            intervalMs: config.pollIntervalMs,
+            run: async (taskSignal) => {
+              const stats = await municipal.runJob(taskSignal);
+              logger.info('municipal job finished', { complete: stats.complete, elections: stats.elections });
             },
           },
         ],

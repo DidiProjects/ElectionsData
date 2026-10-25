@@ -32,7 +32,7 @@ describe('loadConfig', () => {
       states: ALL_STATES,
       outputDir: '/data/output',
       databaseUrl: 'postgresql://elections:secret@elections-postgres:5432/elections',
-      outputPrefix: 'secoes',
+      outputTag: '',
       maxVersions: 1000,
       pollIntervalMs: 60_000,
       scheduleStart: null,
@@ -49,7 +49,7 @@ describe('loadConfig', () => {
       ...base,
       TSE_BASE_URL: 'http://mirror.local/oficial/',
       STATES: 'SP, rj',
-      OUTPUT_PREFIX: 'secoes_2t2026',
+      OUTPUT_TAG: '2t2026',
       MODE: ' Backfill ',
       MAX_CSV_VERSIONS: '50',
       SCHEDULE_START: '2026-10-25T17:00:00-03:00',
@@ -62,7 +62,7 @@ describe('loadConfig', () => {
     expect(config.baseUrl).toBe('http://mirror.local/oficial');
     expect(config.states).toEqual(['sp', 'rj']);
     expect(config.mode).toBe('backfill');
-    expect(config.outputPrefix).toBe('secoes_2t2026');
+    expect(config.outputTag).toBe('2t2026');
     expect(config.maxVersions).toBe(50);
     expect(config.scheduleStart?.toISOString()).toBe('2026-10-25T20:00:00.000Z');
     expect(config.scheduleEnd?.toISOString()).toBe('2026-10-26T06:00:00.000Z');
@@ -91,7 +91,7 @@ describe('loadConfig', () => {
     [{ OFFICE_CODES: '1,x' }, 'OFFICE_CODES contains invalid code "x"'],
     [{ STATES: 'sao' }, 'STATES contains invalid UF "sao"'],
     [{ STATES: 'xx' }, 'STATES contains invalid UF "xx"'],
-    [{ OUTPUT_PREFIX: 'a/b' }, 'OUTPUT_PREFIX may only contain letters, digits, "_" and "-", got "a/b"'],
+    [{ OUTPUT_TAG: 'a/b' }, 'OUTPUT_TAG may only contain letters, digits, "_" and "-", got "a/b"'],
     [{ MAX_CSV_VERSIONS: '0' }, 'MAX_CSV_VERSIONS must be a positive integer, got "0"'],
     [{ ELECTION_CYCLE: '2026' }, 'ELECTION_CYCLE must look like "ele2026", got "2026"'],
     [{ MAX_RETRIES: '-1' }, 'MAX_RETRIES must be a non-negative integer, got "-1"'],
