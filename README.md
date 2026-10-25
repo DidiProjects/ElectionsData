@@ -197,8 +197,8 @@ Os CSVs aparecem em `OUTPUT_HOST_DIR`, por padrão `./output`.
 
 `.github/workflows/deploy.yml`:
 
-- Em todo push e PR para `main`: roda typecheck e a suíte completa, com um Postgres de serviço e `TEST_DATABASE_URL`.
-- Em push para `main`: publica a imagem no GHCR e, via Tailscale + SSH, prepara o servidor e sobe o worker:
+- Em todo PR para `main`: roda typecheck e a suíte completa, com um Postgres de serviço e `TEST_DATABASE_URL`.
+- **O deploy é manual.** Ele nunca roda num push, só quando você dispara em *Actions → Deploy to Home Server → Run workflow*. Disparado na `main`, roda os testes, publica a imagem no GHCR e, via Tailscale + SSH, prepara o servidor e sobe o worker. Disparado em qualquer outra branch, roda só os testes:
   - cria a rede `elections-network`, se ainda não existir;
   - sobe o `elections-postgres`, com volume `elections_postgres_data`, e espera o `pg_isready`;
   - sobe o container `elections-data-worker`, montando `OUTPUT_HOST_DIR` em `/data/output`.

@@ -1,10 +1,10 @@
 name: Deploy to Home Server
 
 on:
-  push:
-    branches: [ main ]
-  # Runs the suite on PRs to main too, so the gate acts before the merge.
-  # The deploy job is restricted to push (see its `if`).
+  # Deploys are started by hand (Actions -> "Deploy to Home Server" -> Run workflow),
+  # never by a push. The deploy job also refuses any branch but main (see its `if`).
+  workflow_dispatch:
+  # PRs to main still run the suite, so the gate acts before the merge.
   pull_request:
     branches: [ main ]
 
@@ -51,8 +51,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: test
-    # Never deploy from a PR — only from a push to main
-    if: github.event_name == 'push'
+    # Only a manual run on main deploys; PR runs and manual runs on other branches stop after the tests.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
