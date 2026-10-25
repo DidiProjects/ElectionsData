@@ -68,6 +68,12 @@ export class FakeClock implements Clock {
     setImmediate(() => {
       this.flushScheduled = false;
       if (this.pending.length === 0) return;
+      // A task waiting on real disk I/O is not idle: advancing now would let a concurrent
+      // task race through virtual time while that write is still in flight.
+      if (process.getActiveResourcesInfo().some((r) => r.startsWith('FSReq') || r === 'FileHandle')) {
+        this.scheduleFlush();
+        return;
+      }
       this.pending.sort((a, b) => a.at - b.at);
       const next = this.pending.shift() as PendingSleep;
       this.current = Math.max(this.current, next.at);

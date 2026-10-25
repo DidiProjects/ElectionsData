@@ -27,7 +27,7 @@ async function main(): Promise<void> {
     pleitoCode: config.pleitoCode,
     officeCodes: config.officeCodes,
     states: config.states,
-    outputPrefix: config.outputPrefix,
+    outputTag: config.outputTag,
     outputDir: config.outputDir,
   });
 

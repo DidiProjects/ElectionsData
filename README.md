@@ -1,6 +1,11 @@
 # ElectionsData
 
-Worker em TypeScript que coleta, seção eleitoral por seção eleitoral, os boletins de urna (BU) publicados pelo TSE e grava os votos em arquivos CSV versionados numa pasta do servidor.
+Worker em TypeScript que acompanha a apuração no TSE com dois coletores, rodando lado a lado, e grava CSVs versionados numa pasta do servidor:
+
+- **Por seção (`secoes/`):** decodifica os boletins de urna (BU) e grava os votos de cada seção. É o dado mais detalhado, mas pode chegar em lote, horas depois (ver [Quando os BUs ficam disponíveis](#quando-os-bus-ficam-disponíveis)).
+- **Por município (`municipios/`):** lê a totalização oficial, que é atualizada ao vivo a partir das 17h de Brasília. É a fonte dos resultados parciais durante a contagem.
+
+Os dois são independentes: um lote grande de BUs nunca atrasa os parciais por município.
 
 Não expõe API nem porta: a entrada é só por variáveis de ambiente e a saída é só a pasta de CSVs.
 
@@ -15,6 +20,9 @@ O TSE não tem API REST. Os boletins de urna ficam em arquivos estáticos servid
 | Arquivo auxiliar da seção (status e hash do BU) | `…/arquivo-urna/{pleito}/dados/{uf}/{município}/{zona}/{seção}/p{pleito:6}-{uf}-m{município}-z{zona}-s{seção}-aux.json` |
 | Boletim de urna (binário ASN.1/DER) | `…/{seção}/{hash}/o{pleito:5}{uf}{município}{zona}{seção}-bu.dat` |
 | Nomes dos candidatos por UF | `…/{ciclo}/{eleição}/dados/{uf}/{uf}-c{cargo:4}-e{eleição:6}-u.json` |
+| Municípios da eleição | `…/{ciclo}/{eleição}/config/mun-e{eleição:6}-cm.json` |
+| Acompanhamento da totalização por UF | `…/{ciclo}/{eleição}/dados/{uf}/{uf}-e{eleição:6}-ab.json` |
+| Resultado por município | `…/{ciclo}/{eleição}/dados/{uf}/{uf}{município}-c{cargo:4}-e{eleição:6}-u.json` |
 
 O **pleito** agrupa todas as eleições do mesmo dia: `3220` é o 1º turno de 2026 e `3221` é o 2º turno, que também inclui eleições suplementares e consultas populares. Cada BU traz o resultado de todas as eleições votadas naquela urna, e `OFFICE_CODES` escolhe os cargos exportados: `1` presidente, `3` governador, `5` senador, `6` deputado federal, `7` deputado estadual, `8` deputado distrital, `11` prefeito.
 
@@ -28,7 +36,9 @@ No 1º turno de 2026, os BUs **não** foram publicados durante a apuração. Sa�
 | SP | 17:20 → 22:47 | 22h–23h |
 | BA | 18:36 → 00:39 | 0h do dia seguinte |
 
-Por isso, durante a contagem o CSV fica vazio, e as seções aparecem por UF à medida que os lotes saem.
+O TSE diz que, desde 2022, os BUs ficam disponíveis "em tempo real" durante a apuração. Os horários de 2026 acima sugerem lote, mas não sei se marcam a primeira disponibilização ou uma regravação do arquivo. Por isso existe o coletor por município: ele garante resultados parciais ao vivo de qualquer forma.
+
+A divulgação oficial começa às **17h de Brasília**, para todas as UFs ao mesmo tempo, exterior incluído. Antes disso, os arquivos do TSE não têm votos.
 
 ### Validação
 
@@ -55,23 +65,37 @@ O decodificador de BU foi conferido contra o resultado oficial do 1º turno. A s
 
 **Orçamento por job:** um job para de iniciar novas seções quando seu período (`POLL_INTERVAL_SECONDS`) se esgota, exporta e deixa o resto para o próximo. Um lote grande, como o de SP, não segura o export por uma hora.
 
+### Coletor por município
+
+A cada job, ele baixa de forma condicional o acompanhamento da totalização de cada UF e só busca o resultado dos municípios em que a totalização avançou. O primeiro job baixa todos os municípios, cerca de 5,7 mil por cargo. Depois disso, um job sem mudança custa só respostas `304`.
+
+- **Cargos e eleições:** os cargos de `OFFICE_CODES` são mapeados para as eleições do pleito pelo `ele-c.json` do próprio TSE. No `3221`, presidente fica na eleição 6258, governador na 6260 (só em AM, RN, DF, ES, AC e TO), e prefeito nas eleições suplementares.
+- **Atualização:** um resultado só substitui o anterior quando é válido e não é mais antigo, pelo `idg` do TSE. Falhas mantêm o valor anterior.
+- **Publicação:** o CSV só é publicado quando **todo** município × cargo tem valor. Antes da primeira carga completa, nada sai.
+- **Sem banco:** esse coletor não usa o banco. Num restart, ele refaz a carga inicial, o que leva 1 ou 2 minutos.
+
 ## CSV
 
 ```
 OUTPUT_DIR/
-├── secoes_2t2026_current.csv     ← sempre o mais recente; não entra na contagem
-├── secoes_2t2026_0.csv
-├── secoes_2t2026_1.csv
-└── ...                           (no máximo MAX_CSV_VERSIONS; ao chegar no limite, o mais antigo é apagado)
+├── secoes/
+│   ├── secoes_2t2026_current.csv        ← sempre o mais recente; não entra na contagem
+│   ├── secoes_2t2026_0.csv … _N.csv     (no máximo MAX_CSV_VERSIONS; no limite, o mais antigo é apagado)
+└── municipios/
+    ├── municipios_2t2026_current.csv
+    └── municipios_2t2026_0.csv … _N.csv (mesmas regras, contagem própria)
 ```
 
-- **Quem consome o dado lê o `_current`.**
-- Cada job gera um arquivo novo, com tudo o que foi coletado até ali, mesmo que nada tenha mudado. A exceção é antes do primeiro BU: aí nada é gravado, para não gastar o limite de versões com arquivos vazios.
+- **Quem consome o dado lê o `_current`** de cada pasta. O `2t2026` vem de `OUTPUT_TAG`; sem ele, os nomes ficam `secoes_N.csv` e `municipios_N.csv`.
+- **Uma versão por job:** cada job gera um arquivo novo em cada pasta, com tudo o que foi coletado até ali, mesmo que nada tenha mudado. As exceções:
+  - `secoes/` não grava nada antes do primeiro BU;
+  - `municipios/` não grava nada enquanto faltar algum município.
+- **Formato de `municipios/`:** uma linha por município × candidato, com status da totalização, seções totalizadas, eleitorado, comparecimento, abstenção, válidos, brancos, nulos, votos e percentual. Antes das 17h, todos os municípios aparecem como `not_started`, com zero votos.
 - A numeração vem dos arquivos que já estão na pasta (o maior número + 1), então continua depois de um restart ou de uma limpeza manual.
 - A gravação é atômica (`.tmp` e depois `rename`), e o conteúdo é gravado em streaming.
 - Volume: cada versão com o Brasil inteiro tem centenas de MB, e 1000 versões podem somar centenas de GB.
 
-Formato longo, com **uma linha por seção × cargo × votável**:
+Formato de `secoes/`: formato longo, com **uma linha por seção × cargo × votável**:
 
 ```
 data_geracao,SG_UF,CD_MUNICIPIO,NM_MUNICIPIO,NR_ZONA,NR_SECAO,SECOES_AGREGADAS,CD_ELEICAO,CD_CARGO,DS_CARGO,TP_VOTO,NR_VOTAVEL,NM_VOTAVEL,QT_VOTOS,QT_APTOS,QT_COMPARECIMENTO,dt_totalizacao,dt_abertura,dt_encerramento,dt_emissao_bu
@@ -153,9 +177,9 @@ Depois que a janela fecha, o processo continua de pé, sem fazer nada. Se ele sa
 | `STATES` | não | todas + `zz` | UFs separadas por vírgula |
 | `OUTPUT_DIR` | sim | `/data/output` na imagem | Pasta dos CSVs |
 | `DATABASE_URL` | sim | — (o compose monta a partir de `POSTGRES_PASSWORD`) | Postgres com os BUs decodificados |
-| `MODE` | não | `job` | `job` (janela e jobs periódicos) ou `backfill` (carga avulsa que termina sozinha) |
-| `OUTPUT_PREFIX` | não | `secoes` | Prefixo dos arquivos, ex. `secoes_2t2026` |
-| `MAX_CSV_VERSIONS` | não | `1000` | Versões numeradas mantidas (o `_current` não conta) |
+| `MODE` | não | `job` | `job` (janela e os dois coletores periódicos) ou `backfill` (carga avulsa de BUs que termina sozinha; não roda o coletor por município) |
+| `OUTPUT_TAG` | não | vazio | Rótulo nos nomes dos arquivos, ex. `2t2026` → `secoes/secoes_2t2026_0.csv` |
+| `MAX_CSV_VERSIONS` | não | `1000` | Versões numeradas mantidas **por pasta** (o `_current` não conta) |
 | `POLL_INTERVAL_SECONDS` | sim | — | Período e orçamento de tempo do job (≥ 30) |
 | `SCHEDULE_START` | não | agora | Início da janela |
 | `SCHEDULE_END` | não | nunca | Fim da janela |
@@ -207,7 +231,7 @@ Configuração no GitHub:
 
 - **Secrets:** `TAILSCALE_CLIENT_SECRET`, `SSH_PRIVATE_KEY` e `POSTGRES_PASSWORD`.
 - **Variables:** `TAILSCALE_IP`, `ELECTION_CYCLE`, `PLEITO_CODE` e `OFFICE_CODES`.
-- **Variables opcionais:** `STATES`, `SCHEDULE_START`, `SCHEDULE_END`, `OUTPUT_HOST_DIR` (padrão `/srv/elections-data/output`), `OUTPUT_PREFIX`, `MAX_CSV_VERSIONS`, `POLL_INTERVAL_SECONDS`, `MAX_RETRIES`, `CONCURRENCY` e `LOG_LEVEL`.
+- **Variables opcionais:** `STATES`, `SCHEDULE_START`, `SCHEDULE_END`, `OUTPUT_HOST_DIR` (padrão `/srv/elections-data/output`), `OUTPUT_TAG`, `MAX_CSV_VERSIONS`, `POLL_INTERVAL_SECONDS`, `MAX_RETRIES`, `CONCURRENCY` e `LOG_LEVEL`.
 
 ## Estrutura
 
@@ -223,6 +247,7 @@ src/
   polling/               job de coleta guiado pela lista de seções
   db/                    pool do Postgres, transações e migrations
   results/               BUs coletados por seção, em memória e no Postgres
+  municipal/             coletor por município: catálogo de eleições, totalização, CSV
 migrations/              schema SQL, aplicado pelo worker no start
   export/                CSV longo, nomes de candidatos e versionamento _N / _current
   scheduler/             janela de execução e rotina periódica
