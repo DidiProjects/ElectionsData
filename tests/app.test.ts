@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createApp, USER_AGENT, type AppDependencies } from '../src/app.js';
+import { createApp, fileName, USER_AGENT, type AppDependencies } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { runMigrations } from '../src/db/migrator.js';
 import type { FetchFn } from '../src/http/httpClient.js';
@@ -74,6 +74,13 @@ function fakeTse() {
   return { fetch, listCalls: () => listCalls };
 }
 
+describe('fileName', () => {
+  it('appends the tag when there is one', () => {
+    expect(fileName('secoes', '2t2026')).toBe('secoes_2t2026');
+    expect(fileName('municipios', '')).toBe('municipios');
+  });
+});
+
 describe('createApp', () => {
   let dir: string;
 
@@ -91,11 +98,11 @@ describe('createApp', () => {
       STATES: 'ac',
       OUTPUT_DIR: dir,
       DATABASE_URL: 'postgresql://unused-in-unit-tests',
-      OUTPUT_PREFIX: 'secoes_2t2026',
+      OUTPUT_TAG: '2t2026',
       POLL_INTERVAL_SECONDS: '30',
       SCHEDULE_END: end,
     });
-  const read = (name: string) => fs.readFile(path.join(dir, name), 'utf8');
+  const read = (name: string) => fs.readFile(path.join(dir, 'secoes', name), 'utf8');
   const rows = (csv: string) => csv.trimEnd().split('\n').slice(1);
   const buUrls = (fetch: ReturnType<typeof fakeTse>['fetch']) =>
     fetch.mock.calls.map(([url]) => url).filter((u) => u.endsWith('-bu.dat') || u.endsWith('-aux.json'));
@@ -116,7 +123,7 @@ describe('createApp', () => {
     expect((tse.fetch.mock.calls[0]?.[1].headers as Record<string, string>)['User-Agent']).toBe(USER_AGENT);
     expect([...repository.sections.keys()].sort()).toEqual(['ac-01066-0004-0001', 'ac-01066-0004-0002']);
 
-    expect((await fs.readdir(dir)).sort()).toEqual([
+    expect((await fs.readdir(path.join(dir, 'secoes'))).sort()).toEqual([
       'secoes_2t2026_0.csv',
       'secoes_2t2026_1.csv',
       'secoes_2t2026_2.csv',
@@ -153,7 +160,7 @@ describe('createApp', () => {
     }).run();
     expect(buUrls(second.fetch)).toEqual([]);
     expect(rows(await read('secoes_2t2026_current.csv'))).toHaveLength(3);
-    expect((await fs.readdir(dir)).sort()).toEqual(['secoes_2t2026_0.csv', 'secoes_2t2026_1.csv', 'secoes_2t2026_current.csv']);
+    expect((await fs.readdir(path.join(dir, 'secoes'))).sort()).toEqual(['secoes_2t2026_0.csv', 'secoes_2t2026_1.csv', 'secoes_2t2026_current.csv']);
   });
 
   describe('backfill', () => {
@@ -166,7 +173,7 @@ describe('createApp', () => {
         STATES: 'ac',
         OUTPUT_DIR: dir,
         DATABASE_URL: 'postgresql://unused-in-unit-tests',
-        OUTPUT_PREFIX: 'secoes_2t2026',
+        OUTPUT_TAG: '2t2026',
         POLL_INTERVAL_SECONDS: '30',
         CONCURRENCY: '1',
         MODE: 'backfill',
@@ -206,7 +213,7 @@ describe('createApp', () => {
       const summary = await createApp(backfillConfig(), { fetch, clock, logger: silentLogger, repository }).backfill();
       expect(summary).toEqual({ passes: 2, restored: 0, fetched: 4, pending: 0, invalid: 0, failed: 0, stored: 4, aborted: false });
       expect(repository.sections.size).toBe(4);
-      expect((await fs.readdir(dir)).sort()).toEqual(['secoes_2t2026_0.csv', 'secoes_2t2026_current.csv']);
+      expect((await fs.readdir(path.join(dir, 'secoes'))).sort()).toEqual(['secoes_2t2026_0.csv', 'secoes_2t2026_current.csv']);
       expect(rows(await read('secoes_2t2026_current.csv'))).toHaveLength(4);
       // No waiting between passes: only the BU downloads moved the clock.
       expect(clock.now().toISOString()).toBe('2026-10-26T00:01:20.000Z');

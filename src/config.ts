@@ -16,7 +16,9 @@ export interface AppConfig {
   outputDir: string;
   /** Postgres holding the decoded BUs, so they survive restarts and redeploys. */
   databaseUrl: string;
-  outputPrefix: string;
+  /** Label in every file name, e.g. "2t2026" -> secoes/secoes_2t2026_0.csv; empty -> secoes_0.csv. */
+  outputTag: string;
+  /** Per collector: secoes/ and municipios/ each keep this many numbered versions. */
   maxVersions: number;
   pollIntervalMs: number;
   scheduleStart: Date | null;
@@ -117,9 +119,9 @@ export function loadConfig(env: Env): AppConfig {
   const mode = (env.MODE?.trim().toLowerCase() || 'job') as RunMode;
   if (mode !== 'job' && mode !== 'backfill') problems.push(`MODE must be "job" or "backfill", got "${env.MODE}"`);
 
-  const outputPrefix = env.OUTPUT_PREFIX?.trim() || 'secoes';
-  if (!/^[A-Za-z0-9_-]+$/.test(outputPrefix)) {
-    problems.push(`OUTPUT_PREFIX may only contain letters, digits, "_" and "-", got "${outputPrefix}"`);
+  const outputTag = env.OUTPUT_TAG?.trim() ?? '';
+  if (!/^[A-Za-z0-9_-]*$/.test(outputTag)) {
+    problems.push(`OUTPUT_TAG may only contain letters, digits, "_" and "-", got "${outputTag}"`);
   }
 
   const cycle = required('ELECTION_CYCLE');
@@ -134,7 +136,7 @@ export function loadConfig(env: Env): AppConfig {
     states: states.length > 0 ? states : [...ALL_STATES],
     outputDir: required('OUTPUT_DIR'),
     databaseUrl: required('DATABASE_URL'),
-    outputPrefix,
+    outputTag,
     maxVersions: positiveInt('MAX_CSV_VERSIONS', 1000),
     pollIntervalMs: positiveInt('POLL_INTERVAL_SECONDS') * 1000,
     scheduleStart: optionalDate('SCHEDULE_START'),
