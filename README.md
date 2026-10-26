@@ -48,7 +48,7 @@ O decodificador de BU foi conferido contra o resultado oficial do 1º turno. A s
 
 1. **Lista de seções antes do BU.** A cada job, o worker baixa a lista de seções de cada UF (28 com o exterior) e busca aux e BU só das seções que ganharam horário de publicação novo. Um BU é definitivo, então cada seção é baixada **uma única vez**, ou de novo só se o TSE republicar.
 2. **Requisição condicional.** As listas de seções são pedidas com `If-None-Match`. Se nada mudou, o CDN responde `304` sem corpo.
-3. **Concorrência limitada.** `CONCURRENCY` (padrão 64) é o número máximo de requisições simultâneas.
+3. **Concorrência limitada.** `CONCURRENCY` (padrão 16) é o número máximo de requisições simultâneas **de cada coletor**. Os dois rodam juntos, então o total chega ao dobro.
 4. **Retentativas.** Até `MAX_RETRIES` (padrão 3) retentativas para erro de rede, timeout, 408/425/429/5xx e corpo truncado. O intervalo cresce exponencialmente, com *full jitter*, até o máximo de 30 s. 404 e os demais 4xx não são retentados.
 5. **Throttling compartilhado.** Um `429` ou `503` respeita o `Retry-After` e pausa **todos** os workers.
 6. **Intervalo mínimo de 30 s** entre jobs. O CDN guarda as listas em cache por 60 s.
@@ -59,7 +59,19 @@ O decodificador de BU foi conferido contra o resultado oficial do 1º turno. A s
 | `CONCURRENCY` | Medido no 1º turno | Brasil inteiro (cerca de 470 mil seções) |
 |---|---|---|
 | 8 | 500 a 860 seções por minuto (AC) | cerca de 9 a 15 h |
-| 64 | cerca de 4.000 seções por minuto (PB, 10.712 seções em 3 min 23 s), 0 retentativas e 0 throttling | cerca de 2 h |
+| 64 | véspera: cerca de 4.000 seções por minuto (PB), sem throttling. **Dia da eleição: bloqueado por 429** | — |
+
+**Limite do TSE no dia da eleição.** O CDN anuncia `X-RateLimit-Limit: 5000;w=1`, mas é um contador compartilhado, que não diz o limite por cliente. Medido às 15h do dia do 2º turno, com os dois coletores juntos:
+
+| `CONCURRENCY` (por coletor) | Retentativas por 429 em 3 min | Falhas por 429 | Carga por município |
+|---|---|---|---|
+| 8 | 0 | 0 | completa em cerca de 4 min 52 s |
+| **16 (padrão)** | **0** | **0** | **2 publicações em 3 min** |
+| 24 | 680 | 216 | não completou |
+| 32 | 1.655 | 511 | não completou |
+| 64 | cerca de 3.100 falhas em 10 min | — | não completou |
+
+Com 16, os BUs por seção do Brasil inteiro levam bem mais que 2 h. Os parciais ao vivo vêm do coletor por município.
 
 **Persistência:** os BUs decodificados ficam no Postgres (ver [Banco de dados](#banco-de-dados)). O primeiro job depois de um start ou redeploy restaura tudo do banco e só baixa o que falta. Ao fim de cada job, as seções novas são gravadas em lotes de 500, cada lote numa transação. Num `docker stop`, o job em andamento grava o que já baixou antes de sair. Se o banco estiver fora do ar, o worker continua coletando e tenta gravar e restaurar de novo no job seguinte.
 
@@ -177,6 +189,7 @@ Depois que a janela fecha, o processo continua de pé, sem fazer nada. Se ele sa
 | `STATES` | não | todas + `zz` | UFs separadas por vírgula |
 | `OUTPUT_DIR` | sim | `/data/output` na imagem | Pasta dos CSVs |
 | `DATABASE_URL` | sim | — (o compose monta a partir de `POSTGRES_PASSWORD`) | Postgres com os BUs decodificados |
+| `COLLECTORS` | não | `municipios` | Coletores do `MODE=job`: `municipios` e/ou `secoes`. O de seções vem desligado porque, no limite do TSE, o Brasil inteiro leva de 8 a 11 h |
 | `MODE` | não | `job` | `job` (janela e os dois coletores periódicos) ou `backfill` (carga avulsa de BUs que termina sozinha; não roda o coletor por município) |
 | `OUTPUT_TAG` | não | vazio | Rótulo nos nomes dos arquivos, ex. `2t2026` → `secoes/secoes_2t2026_0.csv` |
 | `MAX_CSV_VERSIONS` | não | `1000` | Versões numeradas mantidas **por pasta** (o `_current` não conta) |
@@ -186,7 +199,7 @@ Depois que a janela fecha, o processo continua de pé, sem fazer nada. Se ele sa
 | `MAX_RETRIES` | não | `3` | Retentativas por request |
 | `RETRY_BASE_DELAY_MS` | não | `1000` | Base do backoff exponencial |
 | `REQUEST_TIMEOUT_MS` | não | `15000` | Timeout por tentativa |
-| `CONCURRENCY` | não | `64` | Requests simultâneos |
+| `CONCURRENCY` | não | `16` | Requests simultâneos por coletor (acima de 16, o TSE respondeu 429 no dia da eleição) |
 | `TSE_BASE_URL` | não | `https://resultados.tse.jus.br/oficial` | Para testes ou espelho |
 | `LOG_LEVEL` | não | `info` | `debug`, `info`, `warn` ou `error` |
 

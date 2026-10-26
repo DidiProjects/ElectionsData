@@ -96,6 +96,7 @@ describe('createApp', () => {
       PLEITO_CODE: '3221',
       OFFICE_CODES: '1',
       STATES: 'ac',
+      COLLECTORS: 'secoes,municipios',
       OUTPUT_DIR: dir,
       DATABASE_URL: 'postgresql://unused-in-unit-tests',
       OUTPUT_TAG: '2t2026',
@@ -140,6 +141,31 @@ describe('createApp', () => {
     );
   });
 
+  it('runs only the municipality collector by default', async () => {
+    const tse = fakeTse();
+    const defaults = loadConfig({
+      TSE_BASE_URL: 'https://tse.example/oficial',
+      ELECTION_CYCLE: 'ele2026',
+      PLEITO_CODE: '3221',
+      OFFICE_CODES: '1',
+      STATES: 'ac',
+      OUTPUT_DIR: dir,
+      DATABASE_URL: 'postgresql://unused-in-unit-tests',
+      POLL_INTERVAL_SECONDS: '30',
+      SCHEDULE_END: '2026-10-26T00:00:45Z',
+    });
+    const deps: AppDependencies = {
+      fetch: tse.fetch,
+      clock: new FakeClock('2026-10-26T00:00:00Z'),
+      logger: silentLogger,
+      repository: memoryRepository(),
+    };
+    await createApp(defaults, deps).run();
+    const urls = tse.fetch.mock.calls.map(([url]) => url);
+    expect(urls.some((u) => u.includes('/arquivo-urna/'))).toBe(false);
+    expect(urls).toContain('https://tse.example/oficial/comum/config/ele-c.json');
+  });
+
   it('restores downloaded BUs after a restart instead of fetching them again', async () => {
     const repository = memoryRepository();
     const first = fakeTse();
@@ -171,6 +197,7 @@ describe('createApp', () => {
         PLEITO_CODE: '3221',
         OFFICE_CODES: '1',
         STATES: 'ac',
+        COLLECTORS: 'secoes,municipios',
         OUTPUT_DIR: dir,
         DATABASE_URL: 'postgresql://unused-in-unit-tests',
         OUTPUT_TAG: '2t2026',

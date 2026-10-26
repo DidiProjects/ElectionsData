@@ -152,6 +152,7 @@ jobs:
             -e ELECTION_CYCLE="${{ vars.ELECTION_CYCLE }}" \
             -e PLEITO_CODE="${{ vars.PLEITO_CODE }}" \
             -e OFFICE_CODES="${{ vars.OFFICE_CODES }}" \
+            -e COLLECTORS="${{ vars.COLLECTORS || 'municipios' }}" \
             -e STATES="${{ vars.STATES }}" \
             -e SCHEDULE_START="${{ vars.SCHEDULE_START }}" \
             -e SCHEDULE_END="${{ vars.SCHEDULE_END }}" \
@@ -159,7 +160,7 @@ jobs:
             -e OUTPUT_TAG="${{ vars.OUTPUT_TAG }}" \
             -e MAX_CSV_VERSIONS="${{ vars.MAX_CSV_VERSIONS || '1000' }}" \
             -e MAX_RETRIES="${{ vars.MAX_RETRIES || '3' }}" \
-            -e CONCURRENCY="${{ vars.CONCURRENCY || '64' }}" \
+            -e CONCURRENCY="${{ vars.CONCURRENCY || '16' }}" \
             -e LOG_LEVEL="${{ vars.LOG_LEVEL || 'info' }}" \
             ghcr.io/${REPO_LOWER}:latest
 

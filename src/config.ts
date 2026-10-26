@@ -4,8 +4,13 @@
  */
 export type RunMode = 'job' | 'backfill';
 
+export type Collector = 'municipios' | 'secoes';
+const COLLECTORS: readonly Collector[] = ['municipios', 'secoes'];
+
 export interface AppConfig {
   mode: RunMode;
+  /** Collectors run in MODE=job. Per-section BUs are off by default: under the TSE rate limit they take 8-11h. */
+  collectors: Collector[];
   baseUrl: string;
   cycle: string;
   /** "Pleito" groups every election held on the same day (e.g. 3221 = 2026 2nd round). */
@@ -116,6 +121,14 @@ export function loadConfig(env: Env): AppConfig {
     if (!ALL_STATES.includes(state)) problems.push(`STATES contains invalid UF "${state}"`);
   }
 
+  const collectors = (env.COLLECTORS?.trim() || 'municipios')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean) as Collector[];
+  for (const c of collectors) {
+    if (!COLLECTORS.includes(c)) problems.push(`COLLECTORS contains unknown collector "${c}" (use municipios, secoes)`);
+  }
+
   const mode = (env.MODE?.trim().toLowerCase() || 'job') as RunMode;
   if (mode !== 'job' && mode !== 'backfill') problems.push(`MODE must be "job" or "backfill", got "${env.MODE}"`);
 
@@ -129,6 +142,7 @@ export function loadConfig(env: Env): AppConfig {
 
   const config: AppConfig = {
     mode,
+    collectors: [...new Set(collectors)],
     baseUrl: (env.TSE_BASE_URL?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, ''),
     cycle,
     pleitoCode: positiveInt('PLEITO_CODE'),
@@ -144,9 +158,9 @@ export function loadConfig(env: Env): AppConfig {
     maxRetries: nonNegativeInt('MAX_RETRIES', 3),
     retryBaseDelayMs: nonNegativeInt('RETRY_BASE_DELAY_MS', 1000),
     requestTimeoutMs: positiveInt('REQUEST_TIMEOUT_MS', 15000),
-    // Measured on the 2026 first round: ~4,000 sections/min at 64 with no throttling,
-    // i.e. about 2h for the whole country.
-    concurrency: positiveInt('CONCURRENCY', 64),
+    // Per collector (two run at once). Measured on election day 2026 against the TSE CDN:
+    // 16 had zero 429s; 24, 32 and 64 were throttled until municipal jobs never completed.
+    concurrency: positiveInt('CONCURRENCY', 16),
   };
 
   // TSE serves these files with Cache-Control max-age≈52s; polling faster only adds load.

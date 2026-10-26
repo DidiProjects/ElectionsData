@@ -25,6 +25,7 @@ describe('loadConfig', () => {
     const config = loadConfig(base);
     expect(config).toEqual({
       mode: 'job',
+      collectors: ['municipios'],
       baseUrl: 'https://resultados.tse.jus.br/oficial',
       cycle: 'ele2026',
       pleitoCode: 3221,
@@ -40,7 +41,7 @@ describe('loadConfig', () => {
       maxRetries: 3,
       retryBaseDelayMs: 1000,
       requestTimeoutMs: 15000,
-      concurrency: 64,
+      concurrency: 16,
     });
   });
 
@@ -51,6 +52,7 @@ describe('loadConfig', () => {
       STATES: 'SP, rj',
       OUTPUT_TAG: '2t2026',
       MODE: ' Backfill ',
+      COLLECTORS: 'Secoes, municipios, secoes',
       MAX_CSV_VERSIONS: '50',
       SCHEDULE_START: '2026-10-25T17:00:00-03:00',
       SCHEDULE_END: '2026-10-26T06:00:00Z',
@@ -62,6 +64,7 @@ describe('loadConfig', () => {
     expect(config.baseUrl).toBe('http://mirror.local/oficial');
     expect(config.states).toEqual(['sp', 'rj']);
     expect(config.mode).toBe('backfill');
+    expect(config.collectors).toEqual(['secoes', 'municipios']);
     expect(config.outputTag).toBe('2t2026');
     expect(config.maxVersions).toBe(50);
     expect(config.scheduleStart?.toISOString()).toBe('2026-10-25T20:00:00.000Z');
@@ -87,6 +90,7 @@ describe('loadConfig', () => {
 
   it.each([
     [{ MODE: 'once' }, 'MODE must be "job" or "backfill", got "once"'],
+    [{ COLLECTORS: 'municipios,urnas' }, 'COLLECTORS contains unknown collector "urnas" (use municipios, secoes)'],
     [{ PLEITO_CODE: 'abc' }, 'PLEITO_CODE must be a positive integer, got "abc"'],
     [{ OFFICE_CODES: '1,x' }, 'OFFICE_CODES contains invalid code "x"'],
     [{ STATES: 'sao' }, 'STATES contains invalid UF "sao"'],
